@@ -1,0 +1,12 @@
+[package]
+name = "configurable-features-macros"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+proc-macro2 = "1.0.102"
+quote = "1.0.41"
+syn = {version="2.0.108", features = ["full", "extra-traits"]}
+
+[lib]
+proc-macro = true
