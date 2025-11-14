@@ -39,4 +39,3 @@ pub fn lookup_feature(fname: &'static str) -> Option<Arc<dyn Feature + Send + Sy
 //    dict.get(fname).unwrap().clone()
 }
 
-
