@@ -14,12 +14,22 @@ static FEATURE_MAP: Lazy<Mutex<HashMap<&'static str, Arc<dyn Feature + Send + Sy
 
 pub fn insert_feature(fvalue: Arc<dyn Feature + Send + Sync>) {
     let mut dict = FEATURE_MAP.lock().unwrap();
+    // println!("insert_feature({})",fvalue.string());
     dict.insert(fvalue.string(), fvalue);
+
+    //for (key, feature) in &dict.clone() {
+    //    println!("--- {}: {}", key, feature.string());
+    //}
+
 }
 
 pub fn lookup_feature(fname: &'static str) -> Option<Arc<dyn Feature + Send + Sync>> {
     let dict = FEATURE_MAP.lock().unwrap();
- //   println!("{fname}");
+    //println!("LOOKUP FEATURE {fname}");
+
+    // for (key, feature) in &dict.clone() {
+    //    println!("+++ {}: {}", key, feature.string());
+    //}
 
     match dict.get(fname) {
         Some(v) => Some(v.clone()),

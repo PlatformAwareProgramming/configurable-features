@@ -14,8 +14,11 @@ pub static CURRENT_FEATURES: Lazy<Mutex<PlatformFeatures>> = Lazy::new(|| {
     Mutex::new(m)
 });
 
+static CURRENT_CONFIG_STRING: Lazy<Option<String>> = Lazy::new(|| {
+    readplatformfilecontents().ok()
+});
 
-pub fn readplatform<P:DeserializeOwned>() -> Result<P,Box<dyn Error>> {
+fn readplatformfilecontents() -> Result<String,Box<dyn Error>> {
 
     let platform_path = match env::var("PLATFORM_DESCRIPTION") {
         Ok(var) => var,
@@ -24,6 +27,14 @@ pub fn readplatform<P:DeserializeOwned>() -> Result<P,Box<dyn Error>> {
 
     let contents: String = fs::read_to_string(Path::new(&platform_path).join("Platform.toml"))?;
 
+    Ok(contents)
+}
+
+
+pub fn readplatform<P:DeserializeOwned>() -> Result<P,Box<dyn Error>> {
+
+    let contents = CURRENT_CONFIG_STRING.clone().expect("error reading Platform.toml");
+    
     Ok(toml::from_str(&contents).unwrap())
 }
 

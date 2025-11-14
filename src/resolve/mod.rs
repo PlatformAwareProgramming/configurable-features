@@ -5,9 +5,14 @@ use crate::{Feature, PlatformParameter, CURRENT_FEATURES, PLATFORM_PARAMETERS};
 // The glorious resolution algorithm
 pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>> ) -> i32
 {
-   // println!("ENTER RESOLVE");
+    //println!("ENTER RESOLVE");
 
     let actualplatformfeatures: HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>> = CURRENT_FEATURES.lock().unwrap().clone();
+
+    //println!("Tamanho da tabela: {}", actualplatformfeatures.len());
+    //for (key, feature) in &actualplatformfeatures {
+    //    println!("{}: {}", key, feature.string());
+    //}
 
     let mut i: i32 = (featureset_list.len()-1).try_into().unwrap();
     let mut current_choice: Option<&HashMap<PlatformParameter,Arc<dyn Feature + Send + Sync>>> = None;
@@ -27,7 +32,7 @@ pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature + 
         i -= 1;
     }
 
-    // println!("EXIT RESOLVE {}", current_choice_index + 1);
+    //println!("EXIT RESOLVE {}", current_choice_index + 1);
 
     current_choice_index + 1
 }
