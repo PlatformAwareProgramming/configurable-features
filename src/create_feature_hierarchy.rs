@@ -7,14 +7,19 @@
 ///
 /// # Example
 /// ```
-/// create_feature_hierarchy! {
-///     A -> B -> C => "some_class";
-///     X & Y & Z -> Base => "another_class";
-/// }
+/// create_feature_hierarchy!{register_features_vendor ;"acc_model" : None :> ACCModel :> NVIDIA_GPU & 
+///                                                                                       AMD_GPU & 
+///                                                                                       Intel_GPU; 
+///                          }                                                  
+/// create_feature_hierarchy!{register_features_arch ;"acc_model" : NVIDIA_GPU :> NVIDIA_GPU_Blackwell & 
+///                                                                               NVIDIA_GPU_Ada & 
+///                                                                               NVIDIA_GPU_Hopper; 
+///                          }
+/// create_feature_hierarchy!{register_features_model ;"acc_model" : NVIDIA_GPU_Ada :> NVIDIA_GPU_A100 & 
+///                                                                                    NVIDIA_GPU_A200 & 
+///                                                                                    NVIDIA_GPU_RTX4090 & 
+///                                                                                    NVIDIA_GPU_RTX4000; 
 /// ```
-
-
-
 
 #[macro_export]
 macro_rules! supertype {
@@ -22,36 +27,31 @@ macro_rules! supertype {
     ($other:ident) => { Some(Box::new($other)) };
 }
 
- 
-
 #[macro_export]
 macro_rules! create_feature_hierarchy {
-    (@chain { $class_name:literal } $name:ident -> $next:ident $( -> $rest:ident )*) => {
+    (@chain { $class_name:literal } $name:ident :> $next:ident $( :> $rest:ident )*) => {
         #[derive(Clone)]
         #[allow(non_camel_case_types)]
         pub struct $next;
         
         impl configurable_features::Feature for $next {
-            fn feature_type(self:&Self) -> configurable_features::FeatureKind { configurable_features::FeatureKind::Qualifier }
-            fn feature_obj(self:&Self) -> configurable_features::FeatureObj { configurable_features::FeatureObj::Qualifier(std::sync::Arc::new(self.clone()) as std::sync::Arc<dyn configurable_features::QualifierFeature>) }
-            fn string(&self) -> &'static str { stringify!($next) }
+          //  fn feature_type(self:&Self) -> configurable_features::FeatureKind { configurable_features::FeatureKind::Qualifier }
+            fn feature_obj(self:&Self) -> configurable_features::FeatureObj { configurable_features::FeatureObj::Qualifier(std::sync::Arc::new(self.clone()) ) }
+            fn string(&self) -> String { stringify!($next).to_string() }
             fn supertype(&self) -> Option<Box<dyn configurable_features::Feature>> { configurable_features::supertype!($name) }
-            fn feature_class(&self) -> Option<configurable_features::PlatformParameter> { Some($class_name.to_string()) }
         }
 
-        impl configurable_features::QualifierFeature for $next {}
-        create_feature_hierarchy!(@chain { $class_name } $next $( -> $rest )*);
+        impl configurable_features::QualifierFeature for $next {
+            fn feature_class(&self) -> configurable_features::PlatformParameter { $class_name.to_string() }
+        }
+
+        create_feature_hierarchy!(@chain { $class_name } $next $( :> $rest )*);
     };
 
      (@chain { $class_name:literal } $base:ident) => {  };
 
-    ( $tag:ident ; $class_name:literal : $head:ident $( -> $tail:ident )+ ; ) => {
+    ( $tag:ident ; $class_name:literal : $head:ident $( :> $tail:ident )+ ; ) => {
         paste::paste! {
-//            use crate::{$head, Feature, configurable_features::FeatureKind, configurable_features::FeatureObj, configurable_features::PlatformParameter, configurable_features::QualifierFeature, configurable_features::insert_feature};
-//            use ctor::ctor;
-//            use std::sync::Arc;
-//            use crate::supertype;
-
             #[allow(non_snake_case)]
             #[ctor::ctor]
             fn [<$tag>]() {
@@ -60,26 +60,27 @@ macro_rules! create_feature_hierarchy {
                 )*
             }
         }
-        create_feature_hierarchy!(@chain { $class_name } $head $( -> $tail )*);
+        create_feature_hierarchy!(@chain { $class_name } $head $( :> $tail )*);
     };
 
 
 
-    ( $tag:ident ; $class_name:literal : $base:ident -> $($leaf:ident)&+; ) => {
+    ( $tag:ident ; $class_name:literal : $base:ident :> $($leaf:ident)&+; ) => {
         $(
             #[derive(Clone)]
             #[allow(non_camel_case_types)]
             pub struct $leaf;
 
             impl configurable_features::Feature for $leaf {
-                fn feature_type(self:&Self) -> configurable_features::FeatureKind { configurable_features::FeatureKind::Qualifier }
+               // fn feature_type(self:&Self) -> configurable_features::FeatureKind { configurable_features::FeatureKind::Qualifier }
                 fn feature_obj(self:&Self) -> configurable_features::FeatureObj { configurable_features::FeatureObj::Qualifier(std::sync::Arc::new(self.clone()) as std::sync::Arc<dyn configurable_features::QualifierFeature>) }
-                fn string(&self) -> &'static str { stringify!($leaf) }
+                fn string(&self) -> String { stringify!($leaf).to_string() }
                 fn supertype(&self) -> Option<Box<dyn configurable_features::Feature>> { Some(Box::new($base)) }
-                fn feature_class(&self) -> Option<configurable_features::PlatformParameter> { Some($class_name.to_string()) }
             }
 
-            impl configurable_features::QualifierFeature for $leaf {}
+            impl configurable_features::QualifierFeature for $leaf {
+                fn feature_class(&self) -> configurable_features::PlatformParameter { $class_name.to_string() }
+            }
         )*
         paste::paste! {
             #[allow(non_snake_case)]

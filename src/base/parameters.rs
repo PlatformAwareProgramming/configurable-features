@@ -12,7 +12,7 @@ pub static PLATFORM_PARAMETERS: Lazy<Mutex<Vec<PlatformParameter>>> = Lazy::new(
     Mutex::new(map)
 });
 
-pub type PlatformFeatures = HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>;
+pub type PlatformFeatures = HashMap<PlatformParameter, Arc<dyn Feature>>;
 
 
 pub static FEATURE_TOP: Lazy<Mutex<PlatformFeatures>> = Lazy::new(|| {
@@ -20,7 +20,7 @@ pub static FEATURE_TOP: Lazy<Mutex<PlatformFeatures>> = Lazy::new(|| {
     Mutex::new(map)
 });
 
-pub fn insert_parameter(fname:PlatformParameter, fvalue: Arc<dyn Feature + Send + Sync>) {
+pub fn insert_parameter(fname:PlatformParameter, fvalue: Arc<dyn Feature>) {
     let mut dict = FEATURE_TOP.lock().unwrap();
     let mut paramlist = PLATFORM_PARAMETERS.lock().unwrap();
     paramlist.push(fname.clone());

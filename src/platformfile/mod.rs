@@ -45,7 +45,7 @@ use crate::{lookup_feature, PlatformFeatures, PlatformParameter};
 use super::Feature;
 
 
-pub fn add_qualifier(m: &mut HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>, par:PlatformParameter, v:String) { 
+pub fn add_qualifier(m: &mut HashMap<PlatformParameter, Arc<dyn Feature>>, par:PlatformParameter, v:String) { 
     let f = lookup_feature(Box::leak(v.into_boxed_str()));
     match f {
         Some(f) => { m.insert(par, f); },
@@ -53,6 +53,6 @@ pub fn add_qualifier(m: &mut HashMap<PlatformParameter, Arc<dyn Feature + Send +
     }
 }
 
-pub fn add_quantifier(m: &mut HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>, par:PlatformParameter, v:i32) { 
+pub fn add_quantifier(m: &mut HashMap<PlatformParameter, Arc<dyn Feature>>, par:PlatformParameter, v:i32) { 
     m.insert(par, Arc::new(v));
 }

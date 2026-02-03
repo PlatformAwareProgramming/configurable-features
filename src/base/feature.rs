@@ -5,15 +5,11 @@ use crate::{PlatformParameter, QuantifierType};
 
 use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, sync::Arc};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FeatureKind { Qualifier, Quantifier }
 
 pub trait Feature: Send + Sync {
     fn feature_obj(self:&Self) -> FeatureObj;
-    fn is_top(&self) -> bool { false }
-    fn string(&self) -> &'static str;
-    fn feature_class(&self) -> Option<PlatformParameter>;
-    fn feature_type(self:&Self) -> FeatureKind;
+    fn string(&self) -> String;
     fn supertype(&self) -> Option<Box<dyn Feature>> { None }
 
     fn hash_code(&self) -> u64 {
@@ -21,46 +17,32 @@ pub trait Feature: Send + Sync {
         self.string().hash(&mut s);
         s.finish()
     }
+    
 }
 
 
-pub trait QualifierFeature: Feature + Send + Sync {
-
+pub trait QualifierFeature: Feature {
+    fn feature_class(&self) -> PlatformParameter;
 }
 
 // Only quantifier features have quantifier data.
-pub trait QuantifierFeature: Feature + Send + Sync {
+pub trait QuantifierFeature: Feature {
     fn quantifier_type(&self) -> QuantifierType;
     fn val(&self) -> i32;
 }
 
 
-//pub struct NullFeature;
-
-/*impl Feature for NullFeature {
-    fn string(self:&Self) -> &'static str { "null" }
-    fn feature_class(self:&Self) -> Option<PlatformParameter> { None }
-}
-*/
-
 pub enum FeatureObj {
-    Qualifier(Arc<dyn Feature + Send + Sync>),
-    QualifierVec(Vec<Arc<dyn Feature + Send + Sync>>),
-    Quantifier(Arc<dyn QuantifierFeature + Send + Sync>),
+    Qualifier(Arc<dyn Feature>),
+    QualifierVec(Vec<Arc<dyn QualifierFeature>>),
+    Quantifier(Arc<dyn QuantifierFeature>),
 
 }
 
 impl FeatureObj {
-    pub fn feature_class(&self) -> Option<PlatformParameter> {
-        match self {
-            FeatureObj::Qualifier(f) => f.feature_class(),
-            FeatureObj::QualifierVec(f) => f.first().map(|first| first.feature_class()).flatten(),
-            FeatureObj::Quantifier(f) => f.feature_class(),
-        }
-    }
 
     pub fn subtypeof(&self, other: &FeatureObj) -> bool {
-        if self.feature_class() != other.feature_class() { return false; }
+       // if self.feature_class() != other.feature_class() { return false; }
 
         match (self, other) {
             (FeatureObj::Qualifier(a), FeatureObj::Qualifier(b)) => {
@@ -87,17 +69,17 @@ impl FeatureObj {
                     QuantifierType::AtLeast => match qt_other {
                         QuantifierType::AtLeast => v_self >= v_other,
                         QuantifierType::AtMost => false,
-                        QuantifierType::Value => v_self >= v_other ,
+                        QuantifierType::ExactValue => v_self == v_other,
                     },
                     QuantifierType::AtMost => match qt_other {
                         QuantifierType::AtLeast => false,
                         QuantifierType::AtMost => v_self <= v_other,
-                        QuantifierType::Value => v_self <= v_other,
+                        QuantifierType::ExactValue => v_self <= v_other,
                     },
-                    QuantifierType::Value => match qt_other {
+                    QuantifierType::ExactValue => match qt_other {
                         QuantifierType::AtLeast => v_self >= v_other ,
                         QuantifierType::AtMost => v_self <= v_other,
-                        QuantifierType::Value => v_self == v_other,
+                        QuantifierType::ExactValue => v_self == v_other,
                     },
                 }
             }

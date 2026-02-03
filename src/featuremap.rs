@@ -3,16 +3,16 @@ use std::{collections::HashMap, sync::Mutex};
 
 use once_cell::sync::Lazy;
 
-use crate::Feature;
+use crate::{QualifierFeature};
 
 use std::sync::Arc;
 
-pub static FEATURE_MAP: Lazy<Mutex<HashMap<&'static str, Arc<dyn Feature + Send + Sync>>>> = Lazy::new(|| {
-    let map: HashMap<&'static str, Arc<dyn Feature + Send + Sync>> = HashMap::new();
+pub static FEATURE_MAP: Lazy<Mutex<HashMap<String, Arc<dyn QualifierFeature>>>> = Lazy::new(|| {
+    let map: HashMap<String, Arc<dyn QualifierFeature>> = HashMap::new();
     Mutex::new(map)
 });
 
-pub fn insert_feature(fvalue: Arc<dyn Feature + Send + Sync>) {
+pub fn insert_feature(fvalue: Arc<dyn QualifierFeature>) {
     let mut dict = FEATURE_MAP.lock().unwrap();
     // println!("insert_feature({})",fvalue.string());
     dict.insert(fvalue.string(), fvalue);
@@ -23,7 +23,7 @@ pub fn insert_feature(fvalue: Arc<dyn Feature + Send + Sync>) {
 
 }
 
-pub fn lookup_feature(fname: &'static str) -> Option<Arc<dyn Feature + Send + Sync>> {
+pub fn lookup_feature(fname: &'static str) -> Option<Arc<dyn QualifierFeature>> {
     let dict = FEATURE_MAP.lock().unwrap();
 /*     println!("LOOKUP FEATURE {fname}");
 

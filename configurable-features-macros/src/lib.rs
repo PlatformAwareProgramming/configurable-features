@@ -91,13 +91,13 @@ impl FunctionData {
             if tokens_len == 1 {
                 tokens.extend(quote! {
                     (#platform_lit.to_string(),
-                        Arc::new(#feature) as Arc<dyn Feature + Send + Sync>
+                        Arc::new(#feature) as Arc<dyn Feature>
                     )
                 });
             } else {
                 tokens.extend(quote! {
                     (#platform_lit.to_string(), Arc::new(#feature)
-                        as Arc<dyn Feature + Send + Sync>
+                        as Arc<dyn Feature>
                     ),
                 })
             }

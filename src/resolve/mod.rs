@@ -3,11 +3,11 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{CURRENT_FEATURES, Feature, PLATFORM_PARAMETERS, PlatformParameter, featuremap::FEATURE_MAP};
 
 // The glorious resolution algorithm
-pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>> ) -> i32
+pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature>>> ) -> i32
 {
   //  println!("ENTER RESOLVE");
 
-    let actualplatformfeatures: HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>> = CURRENT_FEATURES.lock().unwrap().clone();
+    let actualplatformfeatures: HashMap<PlatformParameter, Arc<dyn Feature>> = CURRENT_FEATURES.lock().unwrap().clone();
 
    /*  println!("Tamanho da tabela: {}", actualplatformfeatures.len());
     for (key, feature) in &actualplatformfeatures {
@@ -20,22 +20,25 @@ pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature + 
     }
 */
 
+    // i points to the current candidate in the featureset_list
     let mut i: i32 = (featureset_list.len()-1).try_into().unwrap();
-    let mut current_choice: Option<&HashMap<PlatformParameter,Arc<dyn Feature + Send + Sync>>> = None;
+    let mut current_choice: Option<&HashMap<PlatformParameter,Arc<dyn Feature>>> = None;
     let mut current_choice_index  = -1;
 
-    loop {
+    while i >= 0 {
+        // look for the next candidate that is compatible with actualplatformfeatures and is more specific than current_choice, if it is defined
         while i >= 0 && !(issubtypeof(&actualplatformfeatures, &featureset_list[i as usize]) 
                                    && (current_choice.is_none() || 
                                        issubtypeof(&featureset_list[i as usize], &current_choice.unwrap()))) { 
             i -= 1;
         }
 
-        if i < 0 { break }
-
-        current_choice = Some(&featureset_list[i as usize]);
-        current_choice_index = i;
-        i -= 1;
+        if i >= 0 {
+            // if i >= 0, we found a candidate and current choice must be updated
+            current_choice = Some(&featureset_list[i as usize]);
+            current_choice_index = i;
+            i -= 1;
+        }
     }
 
     //println!("EXIT RESOLVE {}", current_choice_index + 1);
@@ -45,7 +48,7 @@ pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature + 
     
 
 // check whether the left set of features is a subtype of the right set of features (compatibilty relation)
-pub fn issubtypeof(lhs: &HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>, rhs: &HashMap<PlatformParameter, Arc<dyn Feature + Send + Sync>>) -> bool {
+pub fn issubtypeof(lhs: &HashMap<PlatformParameter, Arc<dyn Feature>>, rhs: &HashMap<PlatformParameter, Arc<dyn Feature>>) -> bool {
 
    // println!("subtype test"); // DEBUG
 
@@ -70,7 +73,7 @@ pub fn issubtypeof(lhs: &HashMap<PlatformParameter, Arc<dyn Feature + Send + Syn
 
         let issubtype = match vl {
                                 None => match vr {
-                                    Some(vrt) => vrt.is_top(),
+                                    Some(vrt) => vrt.supertype().is_none(),
                                     None => true,
                                 }
                                 Some(vlt) => match vr {
