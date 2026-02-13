@@ -1,435 +1,357 @@
-//! NOTE: This crate is in early development.
-
-use proc_macro2::{Span, TokenStream};
-use quote::{quote, ToTokens};
+use proc_macro::TokenStream;
+use quote::{format_ident, quote, ToTokens};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use syn::{
-    parse_macro_input, punctuated::Punctuated, Attribute, Block, FnArg, Ident, Item, ItemFn,
-    ItemMod, Meta, Pat, PatIdent, PatType, ReturnType, Token,
+    parse_macro_input, spanned::Spanned, Attribute, FnArg, ImplItem, Item, ItemFn, ItemImpl,
+    ItemMod, ItemMacro, Meta, Signature, Visibility,
 };
 
-struct FunctionData {
-    block: Block,
-    kernelv: Option<TokenStream>,
-}
+#[proc_macro_attribute]
+pub fn configurable(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let _ = attr;
+    
+    let mut item_mod = parse_macro_input!(item as ItemMod);
 
-struct FunctionGroup {
-    id: Ident,
-    params: Punctuated<FnArg, Token![,]>,
-    functions: Vec<FunctionData>,
-    match_arms: Vec<TokenStream>,
-    return_type: ReturnType,
-    lazy: Ident,
-}
-
-struct FunctionSupergroup(Vec<FunctionGroup>);
-
-impl FunctionData {
-    fn new(block: Block, kernelv: Option<TokenStream>) -> FunctionData {
-        FunctionData { block, kernelv }
+    if let Err(e) = expand_includes(&mut item_mod) {
+        return e.into_compile_error().into();
     }
 
-    fn new_from_itemfn(item_fn: ItemFn) -> FunctionData {
-        FunctionData::new(
-            get_block_from_item_fn(&item_fn),
-            FunctionData::get_kernel_version_from_item_fn(&item_fn),
-        )
-    }
-
-    fn build_function(
-        &self,
-        params: Punctuated<FnArg, Token![,]>,
-        mut function_name: Ident,
-        n: i32,
-        return_type: ReturnType,
-    ) -> TokenStream {
-        let block_ = &self.block;
-        let params_ = params.clone().into_iter();
-
-        function_name = Ident::new(&format!("{}{}", function_name, n), Span::call_site().into());
-
-        quote! {
-            fn #function_name (#(#params_),*) #return_type #block_
+    if let Some((_, ref mut items)) = item_mod.content {
+        let mut new_items = Vec::new();
+        
+        let mut fn_groups: HashMap<String, Vec<FunctionVariant>> = HashMap::new();
+        
+        for item in items.drain(..) {
+            match item {
+                Item::Fn(mut func) => {
+                    if has_assumptions(&func.attrs) {
+                        let name = func.sig.ident.to_string();
+                        let assumptions = extract_assumptions(&mut func.attrs);
+                        fn_groups.entry(name).or_default().push(FunctionVariant {
+                            item: Item::Fn(func),
+                            assumptions,
+                        });
+                    } else {
+                        new_items.push(Item::Fn(func));
+                    }
+                }
+                Item::Impl(mut impl_block) => {
+                    process_impl_block(&mut impl_block);
+                    new_items.push(Item::Impl(impl_block));
+                }
+                _ => new_items.push(item),
+            }
         }
+
+        for (name, variants) in fn_groups {
+            let dispatcher = generate_dispatch(&name, variants);
+            new_items.extend(dispatcher);
+        }
+        
+        *items = new_items;
     }
 
-    fn get_kernel_version_from_item_fn(item_fn: &ItemFn) -> Option<TokenStream> {
-        let tokens = if let Meta::List(list) = &item_fn.attrs[0].meta {
-            list.tokens.clone()
+    TokenStream::from(quote! { #item_mod })
+}
+
+struct FunctionVariant {
+    item: Item, 
+    assumptions: Option<proc_macro2::TokenStream>,
+}
+
+fn process_impl_block(impl_block: &mut ItemImpl) {
+    let mut method_groups: HashMap<String, Vec<ImplItem>> = HashMap::new();
+    let mut methods_assumptions: HashMap<String, Vec<Option<proc_macro2::TokenStream>>> = HashMap::new();
+    let mut other_items = Vec::new();
+
+    for item in impl_block.items.drain(..) {
+        if let ImplItem::Fn(mut method) = item {
+            if has_assumptions(&method.attrs) {
+                let name = method.sig.ident.to_string();
+                let assumptions = extract_assumptions(&mut method.attrs);
+                
+                methods_assumptions.entry(name.clone()).or_default().push(assumptions);
+                method_groups.entry(name).or_default().push(ImplItem::Fn(method));
+            } else {
+                other_items.push(ImplItem::Fn(method));
+            }
         } else {
-            return None;
-        };
-
-        //(Platform, Feature)
-        let mut kernv: Vec<(TokenStream, TokenStream)> = Vec::new();
-        let mut iter = tokens.into_iter();
-
-        while let Some(platform_token) = iter.next() {
-            let platform: TokenStream = platform_token.into();
-
-            let _punct = iter.next();
-
-            if let Some(feature_token) = iter.next() {
-                let feature: TokenStream = feature_token.into();
-                kernv.push((platform, feature));
-            } else {
-                break;
-            }
-
-            let _sep = iter.next();
+            other_items.push(item);
         }
-
-        if kernv.len() == 0 {
-            return None;
-        }
-
-        let mut tokens = TokenStream::new();
-        let mut tokens_len = kernv.len();
-        for (platform, feature) in kernv {
-            let platform_str = platform.to_string();
-            let platform_lit = syn::LitStr::new(&platform_str, proc_macro2::Span::call_site());
-
-            if tokens_len == 1 {
-                tokens.extend(quote! {
-                    (#platform_lit.to_string(),
-                        Arc::new(#feature) as Arc<dyn Feature>
-                    )
-                });
-            } else {
-                tokens.extend(quote! {
-                    (#platform_lit.to_string(), Arc::new(#feature)
-                        as Arc<dyn Feature>
-                    ),
-                })
-            }
-
-            tokens_len -= 1;
-        }
-
-        Some(quote! {
-            HashMap::from([#tokens])
-        })
     }
+
+    for (name, mut methods) in method_groups {
+        let assumptions_list = methods_assumptions.remove(&name).unwrap();
+        
+        let master_sig = if let ImplItem::Fn(m) = &methods[0] {
+            m.sig.clone()
+        } else { unreachable!() };
+        
+        let vis = if let ImplItem::Fn(m) = &methods[0] {
+            m.vis.clone()
+        } else { unreachable!() };
+
+        let mut variant_idents = Vec::new();
+        for (i, method_item) in methods.iter_mut().enumerate() {
+            if let ImplItem::Fn(m) = method_item {
+                let new_name = format_ident!("{}_variant_{}", name, i);
+                m.sig.ident = new_name.clone();
+                variant_idents.push(new_name);
+            }
+            other_items.push(method_item.clone());
+        }
+
+        let dispatcher = generate_impl_dispatcher(&name, &master_sig, &vis, &variant_idents, &assumptions_list);
+        other_items.push(dispatcher);
+    }
+
+    impl_block.items = other_items;
 }
 
-impl FunctionGroup {
-    fn new(
-        id: Ident,
-        params: Punctuated<FnArg, Token![,]>,
-        functions: Vec<FunctionData>,
-        match_arms: Vec<TokenStream>,
-        return_type: ReturnType,
-    ) -> FunctionGroup {
-        FunctionGroup {
-            lazy: Ident::new(
-                &format!("{}_lazy_ref", &id.to_string()),
-                Span::call_site().into(),
-            ),
-            id,
-            params,
-            functions,
-            match_arms,
-            return_type,
-        }
-    }
-
-    fn build_arms(&mut self, function_name: Ident, params_name: Vec<Ident>, n: i32) {
-        self.match_arms = FunctionGroup::create_arms(function_name, params_name, n);
-    }
-
-    fn create_arms(function_name: Ident, params_name: Vec<Ident>, n: i32) -> Vec<TokenStream> {
-        let mut arms: Vec<TokenStream> = Vec::new();
-
-        for i in 0..n {
-            let new_function_name =
-                Ident::new(&format!("{}{}", function_name, i), Span::call_site().into());
-            let expr = quote! {
-                #i => #new_function_name (#(#params_name),*)
+fn expand_includes(item_mod: &mut ItemMod) -> syn::Result<()> {
+    if let Some((_, ref mut items)) = item_mod.content {
+        let mut i = 0;
+        while i < items.len() {
+            let should_expand = if let Item::Macro(mac) = &items[i] {
+                mac.mac.path.is_ident("configurable")
+            } else {
+                false
             };
 
-            arms.push(expr);
-        }
-
-        let fallback_name = Ident::new(&format!("{}0", function_name), Span::call_site().into());
-        let expr = quote! {
-            _ => #fallback_name (#(#params_name),*)
-        };
-
-        arms.push(expr);
-
-        arms
-    }
-
-    fn build_group_dispatch(&self) -> TokenStream {
-        let id_ = &self.id;
-        let params_ = self.params.clone().into_iter();
-        let arms_ = &self.match_arms;
-        let return_type_ = &self.return_type;
-        let lazy_ = &self.lazy;
-
-        let dispatch = quote! {
-            pub fn #id_ (#(#params_),*) #return_type_ {
-                match *#lazy_ {
-                    #(#arms_),*
+            if should_expand {
+                let item = items.remove(i);
+                if let Item::Macro(mac) = item {
+                    let path_str: syn::LitStr = mac.mac.parse_body()?;
+                    let file_content = read_included_file(&path_str.value())?;
+                    let file_ast: syn::File = syn::parse_str(&file_content)?;
+                    
+                    for new_item in file_ast.items.into_iter().rev() {
+                        items.insert(i, new_item);
+                    }
+                    continue; 
                 }
             }
-        };
-
-        dispatch
+            i += 1;
+        }
     }
-
-    fn build_resolve(&self) -> TokenStream {
-        let lazy_ = &self.lazy;
-
-        let platforms_list: Vec<TokenStream> = {
-            let mut platforms: Vec<TokenStream> = Vec::new();
-
-            for f in &self.functions {
-                match &f.kernelv {
-                    None => continue,
-                    Some(kv) => {
-                        platforms.push(kv.clone());
-                    }
-                }
-            }
-
-            platforms
-        };
-
-        let resolve = quote! {
-            lazy_static! {
-                static ref #lazy_ : i32 = {
-                    resolve(vec![#(#platforms_list),*])
-                };
-            }
-        };
-
-        resolve
-    }
-
-    fn get_params_name_from_itemfn(item_fn: &ItemFn) -> Vec<Ident> {
-        item_fn
-            .sig
-            .inputs
-            .iter()
-            .filter_map(|arg| {
-                let FnArg::Typed(PatType { pat, .. }) = arg else {
-                    return None;
-                };
-                let Pat::Ident(PatIdent { ident, .. }) = &**pat else {
-                    return None;
-                };
-                Some(ident.clone())
-            })
-            .collect()
-    }
+    Ok(())
 }
 
-impl FunctionSupergroup {
-    fn build_supergroup(item_mod: &ItemMod, idents: Vec<Ident>) -> FunctionSupergroup {
-        let mut fsg = FunctionSupergroup(Vec::new());
+fn read_included_file(path: &str) -> syn::Result<String> {
+    let mut file_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
+    file_path.push(path);
 
-        for ident in idents {
-            let ident_ = ident.clone();
-            let mut fg = FunctionGroup::new(
-                ident,
-                Punctuated::new(),
-                Vec::new(),
-                Vec::new(),
-                ReturnType::Default,
-            );
-            let mut params_names: Vec<Ident> = Vec::new();
-
-            if let Some(tuple) = &item_mod.content {
-                let content_array = tuple.clone().1;
-
-                content_array.into_iter().for_each(|item| match item {
-                    Item::Fn(item_fn) if item_fn.sig.ident == ident_ => {
-                        fg.functions.push(FunctionData::new_from_itemfn(item_fn.clone()));
-                        fg.params = get_inputs_from_itemfn(&item_fn);
-                        params_names = FunctionGroup::get_params_name_from_itemfn(&item_fn);
-                        fg.return_type = get_return_type_from_itemfn(&item_fn);
-                    }
-                    _ => {}
-                })
-            }
-
-            if fg.functions.len() == 0 {
-                continue;
-            }
-
-            fg.build_arms(fg.id.clone(), params_names, fg.functions.len() as i32);
-
-            fsg.0.push(fg);
-        }
-
-        fsg
-    }
-
-    fn build_all_match_arms(&self) -> Vec<TokenStream> {
-        let mut arms: Vec<TokenStream> = Vec::new();
-
-        for fg in &self.0 {
-            arms.push(fg.build_group_dispatch());
-        }
-
-        arms
-    }
-
-    fn build_all_functions(&self) -> Vec<TokenStream> {
-        let mut functions: Vec<TokenStream> = Vec::new();
-
-        for fg in &self.0 {
-            for (i, f) in fg.functions.iter().enumerate() {
-                functions.push(f.build_function(
-                    fg.params.clone(),
-                    fg.id.clone(),
-                    i as i32,
-                    fg.return_type.clone(),
-                ));
-            }
-        }
-
-        functions
-    }
-
-    fn build_all_resolves(&self) -> Vec<TokenStream> {
-        let mut resolves: Vec<TokenStream> = Vec::new();
-
-        for fg in &self.0 {
-            resolves.push(fg.build_resolve());
-        }
-
-        resolves
-    }
+    fs::read_to_string(&file_path).map_err(|e| {
+        syn::Error::new(proc_macro2::Span::call_site(), format!("Failed to read file {:?}: {}", file_path, e))
+    })
 }
 
-fn get_return_type_from_itemfn(item_fn: &ItemFn) -> ReturnType {
-    item_fn.sig.output.clone()
-}
+fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>) -> Vec<Item> {
+    let mut items = Vec::new();
+    let mut variant_names = Vec::new();
+    let mut assumption_tokens = Vec::new();
 
-fn get_function_ids_from_attr(attr: proc_macro::TokenStream) -> Vec<Ident> {
-    let mut ids: Vec<Ident> = Vec::new();
+    let master_sig = if let Item::Fn(f) = &variants[0].item { f.sig.clone() } else { panic!("Not a function") };
+    let master_vis = if let Item::Fn(f) = &variants[0].item { f.vis.clone() } else { panic!("Not a function") };
 
-    attr.into_iter().for_each(|token| {
-        if let proc_macro::TokenTree::Ident(ident) = token {
-            ids.push(Ident::new(&ident.to_string(), Span::call_site()));
-        }
+    for (i, variant) in variants.into_iter().enumerate() {
+        let mut func = if let Item::Fn(f) = variant.item { f } else { panic!() };
+        let new_ident = format_ident!("{}_variant_{}", original_name, i);
+        func.sig.ident = new_ident.clone();
+        
+        items.push(Item::Fn(func));
+        variant_names.push(new_ident);
+        assumption_tokens.push(variant.assumptions);
+    }
+
+    let platforms_vec = build_platforms_vec(&assumption_tokens);
+    
+    let args = args_from_sig(&master_sig);
+    let mut match_arms = Vec::new();
+    
+    for (idx, variant_ident) in variant_names.iter().enumerate() {
+        let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
+        match_arms.push(quote! {
+            #idx_lit => #variant_ident(#args)
+        });
+    }
+
+    let fallback_ident = &variant_names[0];
+    match_arms.push(quote! {
+        _ => #fallback_ident(#args)
     });
 
-    ids
-}
-
-fn get_contents_from_itemmod(item_mod: &ItemMod) -> Vec<TokenStream> {
-    fn is_assumptions(attr: &Attribute) -> bool {
-        attr.path().is_ident("assumptions")
-    }
-
-    let items = if let Some((_, items)) = &item_mod.content {
-        items
-    } else {
-        return Vec::new();
-    };
-
-    items
-        .iter()
-        .filter(|item| match item {
-            Item::Fn(item_fn) => !item_fn.attrs.iter().any(|attr| is_assumptions(attr)),
-            _ => true,
-        })
-        .map(|item| item.to_token_stream())
-        .collect()
-}
-
-fn get_block_from_item_fn(item_fn: &ItemFn) -> Block {
-    *item_fn.block.clone()
-}
-
-fn get_inputs_from_itemfn(item_fn: &ItemFn) -> Punctuated<FnArg, Token![,]> {
-    item_fn.sig.inputs.clone()
-}
-
-fn get_name_from_itemmod(item_mod: &ItemMod) -> Ident {
-    item_mod.ident.clone()
-}
-
-/// This macro should be used in a `mod` declaration. It takes as attributes
-/// the names of the functions declared in the module and builds a multiple
-/// dispatch for each one of them based on the specified platform features.
-///
-/// # Example
-/// ## Declaration
-/// ```
-/// #[configurable(add, multiply)]
-/// mod math_operations {
-///     #[assumptions]
-///     pub fn add(a: i32, b: i32) -> i32 {
-///         println!("Using fallback add");
-///         a + b
-///     }
-///
-///     #[assumptions(cpu_simd=AVX512)]
-///     pub fn add(a: i32, b: i32) -> i32 {
-///         println!("Using AVX512 optimized add");
-///         a + b
-///     }
-///
-///     #[assumptions]
-///     pub fn multiply(a: i32, b: i32) -> i32 {
-///         println!("Using fallback multiply");
-///         a * b
-///     }
-///
-///     #[assumptions(acc_backend=CUDA10)]
-///     pub fn multiply(a: i32, b: i32) -> i32 {
-///         println!("Using CUDA10 optimized multiply");
-///         a * b
-///     }
-/// }
-/// ```
-/// ## Calling
-/// ```
-/// let sum = math_operations::add(5, 10);
-/// let product = math_operations::multiply(5, 10);
-/// ```
-#[proc_macro_attribute]
-pub fn configurable(
-    attr: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let item_mod = parse_macro_input!(item as ItemMod);
-    let fn_ids = get_function_ids_from_attr(attr);
-    let mod_name = get_name_from_itemmod(&item_mod);
-
-    let fsg = FunctionSupergroup::build_supergroup(&item_mod, fn_ids);
-
-    let dispatches = fsg.build_all_match_arms();
-    let functions = fsg.build_all_functions();
-    let resolves = fsg.build_all_resolves();
-    let contents = get_contents_from_itemmod(&item_mod);
-
-    let expanded = quote! {
-        mod #mod_name {
+    let ident = format_ident!("{}", original_name);
+    let generics = &master_sig.generics;
+    let inputs = &master_sig.inputs;
+    let output = &master_sig.output;
+    let where_clause = &master_sig.generics.where_clause;
+    
+    let dispatcher = quote! {
+        #master_vis fn #ident #generics (#inputs) #output #where_clause {
             use platform_aware_features::*;
+            use std::sync::Arc;
+            use std::collections::HashMap;
             use lazy_static::lazy_static;
-            use std::{collections::HashMap, sync::Arc};
 
-            #(#contents)*
+            lazy_static! {
+                static ref SELECTED_VARIANT: i32 = {
+                    let variants = vec![#platforms_vec];
+                    resolve(variants)
+                };
+            }
 
-            #(#resolves)*
-
-            #(#dispatches)*
-
-            #(#functions)*
+            match *SELECTED_VARIANT {
+                #(#match_arms),*
+            }
         }
     };
 
-    eprintln!(
-        "\x1b[93m@INFO | Generated the following module:\x1b[00m\n {}",
-        proc_macro::TokenStream::from(expanded.clone())
-    );
+    items.push(syn::parse2(dispatcher).unwrap());
+    items
+}
 
-    proc_macro::TokenStream::from(expanded)
+fn generate_impl_dispatcher(
+    name: &str, 
+    sig: &Signature, 
+    vis: &Visibility, 
+    variants: &[proc_macro2::Ident], 
+    assumptions: &[Option<proc_macro2::TokenStream>]
+) -> ImplItem {
+    let platforms_vec = build_platforms_vec(assumptions);
+    let args = args_from_sig(sig);
+    
+    let mut match_arms = Vec::new();
+    for (idx, variant_ident) in variants.iter().enumerate() {
+        let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
+        match_arms.push(quote! {
+            #idx_lit => Self::#variant_ident(#args)
+        });
+    }
+    let fallback = &variants[0];
+    match_arms.push(quote! { _ => Self::#fallback(#args) });
+
+    let ident = format_ident!("{}", name);
+    let generics = &sig.generics;
+    let inputs = &sig.inputs;
+    let output = &sig.output;
+    let where_clause = &sig.generics.where_clause;
+
+    let has_receiver = inputs.iter().any(|arg| matches!(arg, FnArg::Receiver(_)));
+    
+    let call_prefix = if has_receiver {
+        quote! { self. }
+    } else {
+        quote! { Self:: }
+    };
+
+    let mut method_match_arms = Vec::new();
+    for (idx, variant_ident) in variants.iter().enumerate() {
+        let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
+        method_match_arms.push(quote! {
+            #idx_lit => #call_prefix #variant_ident(#args)
+        });
+    }
+    method_match_arms.push(quote! { _ => #call_prefix #fallback(#args) });
+
+    let item = quote! {
+        #vis fn #ident #generics (#inputs) #output #where_clause {
+            use platform_aware_features::*;
+            use std::sync::Arc;
+            use std::collections::HashMap;
+            use lazy_static::lazy_static;
+
+            lazy_static! {
+                static ref SELECTED_VARIANT: i32 = {
+                    let variants = vec![#platforms_vec];
+                    resolve(variants)
+                };
+            }
+
+            match *SELECTED_VARIANT {
+                #(#method_match_arms),*
+            }
+        }
+    };
+    
+    syn::parse2(item).expect("Failed to parse impl dispatcher")
 }
 
 
+fn has_assumptions(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| attr.path().is_ident("assumptions") || attr.path().is_ident("kernelversion"))
+}
 
+fn extract_assumptions(attrs: &mut Vec<Attribute>) -> Option<proc_macro2::TokenStream> {
+    let idx = attrs.iter().position(|attr| attr.path().is_ident("assumptions") || attr.path().is_ident("kernelversion"))?;
+    let attr = attrs.remove(idx);
+    
+    if let Meta::List(list) = attr.meta {
+         return Some(list.tokens);
+    }
+    Some(quote! {})
+}
+
+fn build_platforms_vec(assumptions_list: &[Option<proc_macro2::TokenStream>]) -> proc_macro2::TokenStream {
+    let mut array_items = Vec::new();
+    
+    for tokens_opt in assumptions_list {
+        if let Some(tokens) = tokens_opt {
+             array_items.push(transform_tokens_to_hashmap(tokens.clone()));
+        } else {
+            array_items.push(quote! { HashMap::new() });
+        }
+    }
+    
+    quote! { #(#array_items),* }
+}
+
+fn transform_tokens_to_hashmap(tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    use syn::parse::Parser;
+    use syn::{punctuated::Punctuated, MetaNameValue, Token};
+
+    if tokens.is_empty() {
+        return quote! { std::collections::HashMap::new() };
+    }
+
+    let parser = Punctuated::<MetaNameValue, Token![,]>::parse_terminated;
+    
+    let args = match parser.parse2(tokens) {
+        Ok(args) => args,
+        Err(e) => return e.into_compile_error(),
+    };
+
+    let mut pairs = Vec::new();
+    
+    for nv in args {
+        let key = nv.path;
+        let value = nv.value;
+
+        let key_str = key.into_token_stream().to_string().replace(" ", "");
+
+        pairs.push(quote! {
+            (
+                #key_str.to_string(),
+                std::sync::Arc::new(#value) as std::sync::Arc<dyn platform_aware_features::Feature>
+            )
+        });
+    }
+
+    quote! {
+        std::collections::HashMap::from([
+            #(#pairs),*
+        ])
+    }
+}
+
+fn args_from_sig(sig: &Signature) -> proc_macro2::TokenStream {
+    let args: Vec<_> = sig.inputs.iter().filter_map(|arg| {
+        match arg {
+            FnArg::Typed(pat) => Some(&pat.pat),
+            FnArg::Receiver(_) => None,
+        }
+    }).collect();
+    quote! { #(#args),* }
+}
