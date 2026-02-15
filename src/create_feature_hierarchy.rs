@@ -1,4 +1,12 @@
 
+
+
+#[macro_export]
+macro_rules! supertype {
+    (None) => { None };
+    ($other:ident) => { Some(Box::new($other)) };
+}
+
 /// Macro that generates a hierarchy of features with specified supertypes and associates them with a feature class.
 ///
 /// This macro allows you to define a chain of features where each feature inherits from its predecessor,
@@ -20,13 +28,6 @@
 ///                                                                                    NVIDIA_GPU_RTX4090 & 
 ///                                                                                    NVIDIA_GPU_RTX4000; 
 /// ```
-
-#[macro_export]
-macro_rules! supertype {
-    (None) => { None };
-    ($other:ident) => { Some(Box::new($other)) };
-}
-
 #[macro_export]
 macro_rules! create_feature_hierarchy {
     (@chain { $class_name:literal } $name:ident :> $next:ident $( :> $rest:ident )*) => {

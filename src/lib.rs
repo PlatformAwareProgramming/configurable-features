@@ -9,4 +9,5 @@ pub use base::*;
 pub use platformfile::*;
 pub use resolve::*;
 pub use featuremap::{insert_feature, lookup_feature};
-pub use configurable_features_macros::configurable;
+pub use configurable_macros::configurable;
+pub use configurable_internal::__internal_configurable;

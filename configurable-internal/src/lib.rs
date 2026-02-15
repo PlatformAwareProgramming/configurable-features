@@ -1,20 +1,17 @@
-use proc_macro::TokenStream;
+use proc_macro2::TokenStream;
 use quote::{format_ident, quote, ToTokens};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use syn::{
-    parse_macro_input, spanned::Spanned, Attribute, FnArg, ImplItem, Item, ItemFn, ItemImpl,
-    ItemMod, ItemMacro, Meta, Signature, Visibility,
+    Attribute, FnArg, ImplItem, Item, ItemFn, ItemImpl, ItemMacro, ItemMod, Meta,
+    Signature, Visibility, parse_macro_input, parse2, spanned::Spanned
 };
 
-#[proc_macro_attribute]
-pub fn configurable(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let _ = attr;
-    
-    let mut item_mod = parse_macro_input!(item as ItemMod);
+pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &str) -> TokenStream {    
+    let mut item_mod = parse2::<ItemMod>(item).expect("Must be applied to a module");
 
-    if let Err(e) = expand_includes(&mut item_mod) {
+    if let Err(e) = expand_includes(&mut item_mod, macro_name) {
         return e.into_compile_error().into();
     }
 
@@ -26,9 +23,9 @@ pub fn configurable(attr: TokenStream, item: TokenStream) -> TokenStream {
         for item in items.drain(..) {
             match item {
                 Item::Fn(mut func) => {
-                    if has_assumptions(&func.attrs) {
+                    if has_assumptions(&func.attrs, attr_name) {
                         let name = func.sig.ident.to_string();
-                        let assumptions = extract_assumptions(&mut func.attrs);
+                        let assumptions = extract_assumptions(&mut func.attrs, attr_name);
                         fn_groups.entry(name).or_default().push(FunctionVariant {
                             item: Item::Fn(func),
                             assumptions,
@@ -38,7 +35,7 @@ pub fn configurable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
                 Item::Impl(mut impl_block) => {
-                    process_impl_block(&mut impl_block);
+                    process_impl_block(&mut impl_block, attr_name);
                     new_items.push(Item::Impl(impl_block));
                 }
                 _ => new_items.push(item),
@@ -61,16 +58,16 @@ struct FunctionVariant {
     assumptions: Option<proc_macro2::TokenStream>,
 }
 
-fn process_impl_block(impl_block: &mut ItemImpl) {
+fn process_impl_block(impl_block: &mut ItemImpl, attr_name: &str) {
     let mut method_groups: HashMap<String, Vec<ImplItem>> = HashMap::new();
     let mut methods_assumptions: HashMap<String, Vec<Option<proc_macro2::TokenStream>>> = HashMap::new();
     let mut other_items = Vec::new();
 
     for item in impl_block.items.drain(..) {
         if let ImplItem::Fn(mut method) = item {
-            if has_assumptions(&method.attrs) {
+            if has_assumptions(&method.attrs, attr_name) {
                 let name = method.sig.ident.to_string();
-                let assumptions = extract_assumptions(&mut method.attrs);
+                let assumptions = extract_assumptions(&mut method.attrs, attr_name);
                 
                 methods_assumptions.entry(name.clone()).or_default().push(assumptions);
                 method_groups.entry(name).or_default().push(ImplItem::Fn(method));
@@ -110,12 +107,12 @@ fn process_impl_block(impl_block: &mut ItemImpl) {
     impl_block.items = other_items;
 }
 
-fn expand_includes(item_mod: &mut ItemMod) -> syn::Result<()> {
+fn expand_includes(item_mod: &mut ItemMod, macro_name: &str) -> syn::Result<()> {
     if let Some((_, ref mut items)) = item_mod.content {
         let mut i = 0;
         while i < items.len() {
             let should_expand = if let Item::Macro(mac) = &items[i] {
-                mac.mac.path.is_ident("configurable")
+                mac.mac.path.is_ident(macro_name)
             } else {
                 false
             };
@@ -280,12 +277,12 @@ fn generate_impl_dispatcher(
 }
 
 
-fn has_assumptions(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| attr.path().is_ident("assumptions") || attr.path().is_ident("kernelversion"))
+fn has_assumptions(attrs: &[Attribute], attr_name: &str) -> bool {
+    attrs.iter().any(|attr| attr.path().is_ident(attr_name))
 }
 
-fn extract_assumptions(attrs: &mut Vec<Attribute>) -> Option<proc_macro2::TokenStream> {
-    let idx = attrs.iter().position(|attr| attr.path().is_ident("assumptions") || attr.path().is_ident("kernelversion"))?;
+fn extract_assumptions(attrs: &mut Vec<Attribute>, attr_name: &str) -> Option<proc_macro2::TokenStream> {
+    let idx = attrs.iter().position(|attr| attr.path().is_ident(attr_name))?;
     let attr = attrs.remove(idx);
     
     if let Meta::List(list) = attr.meta {
@@ -355,3 +352,4 @@ fn args_from_sig(sig: &Signature) -> proc_macro2::TokenStream {
     }).collect();
     quote! { #(#args),* }
 }
+

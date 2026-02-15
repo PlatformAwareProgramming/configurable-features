@@ -1,6 +1,6 @@
 [workspace]
 resolver="2"
-members = [".", "configurable-features-macros"]
+members = [".", "configurable-macros", "configurable-internal"]
 
 [package]
 name = "configurable-features"
@@ -8,12 +8,15 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-configurable-features-macros = {path="configurable-features-macros"}
+configurable-macros = {path="configurable-macros"}
+configurable-internal = {path="configurable-internal"}
 
 [dependencies]
-configurable-features-macros = {workspace=true}
+configurable-macros = {workspace=true}
+configurable-internal = {workspace=true}
 ctor = "0.6.0"
 once_cell = "1.21.3"
+lazy_static = "1.5.0"
 paste = "1.0.15"
 quote = "1.0.41"
 serde = "1.0.228"
