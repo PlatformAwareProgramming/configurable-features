@@ -5,11 +5,11 @@ use crate::{CURRENT_FEATURES, Feature, PLATFORM_PARAMETERS, PlatformParameter, f
 // The glorious resolution algorithm
 pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature>>> ) -> i32
 {
-    println!("ENTER RESOLVE");
+    // println!("ENTER RESOLVE");
 
     let actualplatformfeatures: HashMap<PlatformParameter, Arc<dyn Feature>> = CURRENT_FEATURES.lock().unwrap().clone();
 
-     println!("Tamanho da tabela: {}", actualplatformfeatures.len());
+    /* println!("Tamanho da tabela: {}", actualplatformfeatures.len());
     for (key, feature) in &actualplatformfeatures {
         println!("{}: {}", key, feature.string());
     }
@@ -17,7 +17,7 @@ pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature>>>
         let dict = FEATURE_MAP.lock().unwrap();
      for (key, feature) in &dict.clone() {
         println!("+++ {}: {}", key, feature.string());
-    }
+    }*/
 
 
     // i points to the current candidate in the featureset_list
@@ -41,26 +41,26 @@ pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature>>>
         }
     }
 
-    println!("EXIT RESOLVE {}", current_choice_index);
+    // println!("EXIT RESOLVE {}", current_choice_index);
 
-    current_choice_index
+    current_choice_index 
 }
     
 
 // check whether the left set of features is a subtype of the right set of features (compatibilty relation)
 pub fn issubtypeof(lhs: &HashMap<PlatformParameter, Arc<dyn Feature>>, rhs: &HashMap<PlatformParameter, Arc<dyn Feature>>) -> bool {
 
-    println!("subtype test"); // DEBUG
+   // println!("subtype test"); // DEBUG
 
     for p in PLATFORM_PARAMETERS.lock().unwrap().iter()  {
 
-        print!("subtype test - parameter {:?}", p); // DEBUG
+        //print!("subtype test - parameter {:?}", p); // DEBUG
         
         let vl = lhs.get(p);
         let vr = rhs.get(p);
 
         // begin DEBUG
-          match vl {
+     /*     match vl {
             Some(s) => print!(" {}", s.string()),
             None => print!(" {}", "no"),
         };
@@ -68,7 +68,7 @@ pub fn issubtypeof(lhs: &HashMap<PlatformParameter, Arc<dyn Feature>>, rhs: &Has
         match vr {
             Some(s) => print!(" {}", s.string()),
             None => print!(" {}", "no"),
-        };  
+        };*/  
         // end DEBUG
 
         let issubtype = match vl {
@@ -81,7 +81,7 @@ pub fn issubtypeof(lhs: &HashMap<PlatformParameter, Arc<dyn Feature>>, rhs: &Has
                                     None => true, 
                                 }
                               };
-        println!(" {}", issubtype); // DEBUG
+        //println!(" {}", issubtype); // DEBUG
         if !issubtype { return false; }
     } 
 

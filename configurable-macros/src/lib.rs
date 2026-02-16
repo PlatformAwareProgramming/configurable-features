@@ -35,17 +35,18 @@ use configurable_internal::__internal_configurable;
 /// ```rust
 /// #[configurable]
 /// mod vector_math {
-///     // Variant 1: Optimized for AVX2 instruction sets
-///     #[assumptions(cpu_simd = AVX2)]
-///     fn add_vectors(a: &[i32], b: &[i32]) -> Vec<i32> {
-///         // ... AVX2 optimized implementation ...
-///         vec![]
-///     }
 ///
 ///     // Variant 2: Standard Scalar Fallback (Required)
 ///     #[assumptions]
 ///     fn add_vectors(a: &[i32], b: &[i32]) -> Vec<i32> {
 ///         a.iter().zip(b).map(|(x, y)| x + y).collect()
+///     }
+///
+///     // Variant 1: Optimized for AVX2 instruction sets
+///     #[assumptions(cpu_simd = AVX2)]
+///     fn add_vectors(a: &[i32], b: &[i32]) -> Vec<i32> {
+///         // ... AVX2 optimized implementation ...
+///         vec![]
 ///     }
 /// }
 /// ```
@@ -57,15 +58,16 @@ use configurable_internal::__internal_configurable;
 /// ```rust
 /// #[configurable]
 /// mod kernels {
-///     // Looks for 'cuda_kernels.rs' in the same directory.
-///     // That file should contain functions marked with #[assumptions(...)].
-///     configurable!("cuda_kernels.rs");
 ///
 ///     // You can mix external includes with inline definitions.
 ///     #[assumptions]
 ///     fn generic_kernel() {
 ///         println!("Running generic kernel");
 ///     }
+/// 
+///     // Looks for 'cuda_kernels.rs' in the same directory.
+///     // That file should contain functions marked with #[assumptions(...)].
+///     configurable!("cuda_kernels.rs");
 /// }
 /// ```
 ///
@@ -87,6 +89,12 @@ use configurable_internal::__internal_configurable;
 ///     // Implement the trait. The macro will generate a dispatcher for `dot_product`.
 ///     impl LinearAlgebra for Vector {
 ///
+///         // Variant C: Default / Fallback
+///         #[assumptions]
+///         fn dot_product(&self, other: &Self) -> f32 {
+///             self.data.iter().zip(&other.data).map(|(a, b)| a * b).sum()
+///         }
+///
 ///         // Variant A: NVIDIA GPU Backend
 ///         // Conceptually: impl LinearAlgebra for Vector where Platform == CUDA
 ///         #[assumptions(backend = CUDA)]
@@ -101,12 +109,6 @@ use configurable_internal::__internal_configurable;
 ///         fn dot_product(&self, other: &Self) -> f32 {
 ///             println!("Dispatching to AVX2 Intrinsic...");
 ///             0.0
-///         }
-///
-///         // Variant C: Default / Fallback
-///         #[assumptions]
-///         fn dot_product(&self, other: &Self) -> f32 {
-///             self.data.iter().zip(&other.data).map(|(a, b)| a * b).sum()
 ///         }
 ///     }
 /// }
