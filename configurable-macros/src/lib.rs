@@ -97,7 +97,7 @@ use configurable_internal::__internal_configurable;
 ///
 ///         // Variant A: NVIDIA GPU Backend
 ///         // Conceptually: impl LinearAlgebra for Vector where Platform == CUDA
-///         #[assumptions(backend = CUDA)]
+///         #[assumptions(acc_backend = CUDA)]
 ///         fn dot_product(&self, other: &Self) -> f32 {
 ///             println!("Dispatching to CUDA Kernel...");
 ///             0.0

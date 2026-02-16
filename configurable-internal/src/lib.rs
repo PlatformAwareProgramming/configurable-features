@@ -5,9 +5,13 @@ use std::fs;
 use std::path::PathBuf;
 use syn::{
     Attribute, FnArg, ImplItem, Item, ItemFn, ItemImpl, ItemMacro, ItemMod, Meta,
-    Signature, Visibility, parse_macro_input, parse2, spanned::Spanned
+    Signature, Visibility, parse2, spanned::Spanned
 };
 
+/// The core logic function.
+/// 
+/// This is exposed as a library function so that a proc-macro crate can call it
+/// with specific configuration (e.g. "assumptions" vs "kernelversion").
 pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &str) -> TokenStream {    
     let mut item_mod = parse2::<ItemMod>(item).expect("Must be applied to a module");
 
@@ -34,9 +38,9 @@ pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &
                         new_items.push(Item::Fn(func));
                     }
                 }
-                Item::Impl(mut impl_block) => {
-                    process_impl_block(&mut impl_block, attr_name);
-                    new_items.push(Item::Impl(impl_block));
+                Item::Impl(impl_block) => {
+                    let processed_blocks = process_impl_block(impl_block, attr_name);
+                    new_items.extend(processed_blocks);
                 }
                 _ => new_items.push(item),
             }
@@ -58,7 +62,7 @@ struct FunctionVariant {
     assumptions: Option<proc_macro2::TokenStream>,
 }
 
-fn process_impl_block(impl_block: &mut ItemImpl, attr_name: &str) {
+fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str) -> Vec<Item> {
     let mut method_groups: HashMap<String, Vec<ImplItem>> = HashMap::new();
     let mut methods_assumptions: HashMap<String, Vec<Option<proc_macro2::TokenStream>>> = HashMap::new();
     let mut other_items = Vec::new();
@@ -79,16 +83,15 @@ fn process_impl_block(impl_block: &mut ItemImpl, attr_name: &str) {
         }
     }
 
+    let mut variants_to_add: Vec<ImplItem> = Vec::new();
+
     for (name, mut methods) in method_groups {
-        let assumptions_list = methods_assumptions.remove(&name).unwrap();
+        let assumptions_list = methods_assumptions
+            .remove(&name)
+            .expect(&format!("Mismatched assumptions for methoded: {}", name));
         
-        let master_sig = if let ImplItem::Fn(m) = &methods[0] {
-            m.sig.clone()
-        } else { unreachable!() };
-        
-        let vis = if let ImplItem::Fn(m) = &methods[0] {
-            m.vis.clone()
-        } else { unreachable!() };
+        let master_sig = if let ImplItem::Fn(m) = &methods[0] { m.sig.clone() } else { unreachable!() };
+        let vis = if let ImplItem::Fn(m) = &methods[0] { m.vis.clone() } else { unreachable!() };
 
         let mut variant_idents = Vec::new();
         for (i, method_item) in methods.iter_mut().enumerate() {
@@ -96,8 +99,16 @@ fn process_impl_block(impl_block: &mut ItemImpl, attr_name: &str) {
                 let new_name = format_ident!("{}_variant_{}", name, i);
                 m.sig.ident = new_name.clone();
                 variant_idents.push(new_name);
+
+                // hide variants from docs
+                if impl_block.trait_.is_some() {
+                     m.vis = Visibility::Public(syn::token::Pub::default());
+                     m.attrs.push(syn::parse_quote!(#[doc(hidden)]));
+                } else {
+                    m.attrs.push(syn::parse_quote!(#[doc(hidden)]));
+                }
             }
-            other_items.push(method_item.clone());
+            variants_to_add.push(method_item.clone());
         }
 
         let dispatcher = generate_impl_dispatcher(&name, &master_sig, &vis, &variant_idents, &assumptions_list);
@@ -105,6 +116,24 @@ fn process_impl_block(impl_block: &mut ItemImpl, attr_name: &str) {
     }
 
     impl_block.items = other_items;
+    let mut result_items = vec![Item::Impl(impl_block.clone())];
+
+    if impl_block.trait_.is_some() {
+        // Trait Implementation (impl Trait for Type)
+        if !variants_to_add.is_empty() {
+            let mut inherent_impl = impl_block.clone();
+            inherent_impl.trait_ = None; // Remove "Trait for"
+            inherent_impl.items = variants_to_add;
+            result_items.push(Item::Impl(inherent_impl));
+        }
+    } else {
+        // Inherent Implementation (impl Type)
+        if let Item::Impl(ref mut original) = result_items[0] {
+            original.items.extend(variants_to_add);
+        }
+    }
+
+    result_items
 }
 
 fn expand_includes(item_mod: &mut ItemMod, macro_name: &str) -> syn::Result<()> {
@@ -163,21 +192,26 @@ fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>) -> Vec
         assumption_tokens.push(variant.assumptions);
     }
 
+    let fallback_idx = assumption_tokens.iter()
+        .position(|t| is_empty_assumption(t))
+        .unwrap_or(0); 
+
     let platforms_vec = build_platforms_vec(&assumption_tokens);
-    
     let args = args_from_sig(&master_sig);
-    let mut match_arms = Vec::new();
     
+    let await_call = if master_sig.asyncness.is_some() { quote!{.await} } else { quote!{} };
+
+    let mut match_arms = Vec::new();
     for (idx, variant_ident) in variant_names.iter().enumerate() {
         let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
         match_arms.push(quote! {
-            #idx_lit => #variant_ident(#args)
+            #idx_lit => #variant_ident(#args) #await_call
         });
     }
 
-    let fallback_ident = &variant_names[0];
+    let fallback_ident = &variant_names[fallback_idx];
     match_arms.push(quote! {
-        _ => #fallback_ident(#args)
+        _ => #fallback_ident(#args) #await_call
     });
 
     let ident = format_ident!("{}", original_name);
@@ -186,9 +220,13 @@ fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>) -> Vec
     let output = &master_sig.output;
     let where_clause = &master_sig.generics.where_clause;
     
+    let constness = &master_sig.constness;
+    let asyncness = &master_sig.asyncness;
+    let unsafety = &master_sig.unsafety;
+    let abi = &master_sig.abi;
+
     let dispatcher = quote! {
-        #master_vis fn #ident #generics (#inputs) #output #where_clause {
-            use platform_aware_features::*;
+        #master_vis #constness #asyncness #unsafety #abi fn #ident #generics (#inputs) #output #where_clause {
             use std::sync::Arc;
             use std::collections::HashMap;
             use lazy_static::lazy_static;
@@ -206,7 +244,7 @@ fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>) -> Vec
         }
     };
 
-    items.push(syn::parse2(dispatcher).unwrap());
+    items.push(syn::parse2(dispatcher).expect("Failed to parse dispatcher"));
     items
 }
 
@@ -220,42 +258,39 @@ fn generate_impl_dispatcher(
     let platforms_vec = build_platforms_vec(assumptions);
     let args = args_from_sig(sig);
     
-    let mut match_arms = Vec::new();
+    let fallback_idx = assumptions.iter()
+        .position(|t| is_empty_assumption(t))
+        .unwrap_or(0);
+
+    let await_call = if sig.asyncness.is_some() { quote!{.await} } else { quote!{} };
+
+    let has_receiver = sig.inputs.iter().any(|arg| matches!(arg, FnArg::Receiver(_)));
+    let call_prefix = if has_receiver { quote! { self. } } else { quote! { Self:: } };
+
+    let mut method_match_arms = Vec::new();
     for (idx, variant_ident) in variants.iter().enumerate() {
         let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
-        match_arms.push(quote! {
-            #idx_lit => Self::#variant_ident(#args)
+        method_match_arms.push(quote! {
+            #idx_lit => #call_prefix #variant_ident(#args) #await_call
         });
     }
-    let fallback = &variants[0];
-    match_arms.push(quote! { _ => Self::#fallback(#args) });
+    
+    let fallback = &variants[fallback_idx];
+    method_match_arms.push(quote! { _ => #call_prefix #fallback(#args) #await_call });
 
     let ident = format_ident!("{}", name);
     let generics = &sig.generics;
     let inputs = &sig.inputs;
     let output = &sig.output;
     let where_clause = &sig.generics.where_clause;
-
-    let has_receiver = inputs.iter().any(|arg| matches!(arg, FnArg::Receiver(_)));
     
-    let call_prefix = if has_receiver {
-        quote! { self. }
-    } else {
-        quote! { Self:: }
-    };
-
-    let mut method_match_arms = Vec::new();
-    for (idx, variant_ident) in variants.iter().enumerate() {
-        let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
-        method_match_arms.push(quote! {
-            #idx_lit => #call_prefix #variant_ident(#args)
-        });
-    }
-    method_match_arms.push(quote! { _ => #call_prefix #fallback(#args) });
+    let constness = &sig.constness;
+    let asyncness = &sig.asyncness;
+    let unsafety = &sig.unsafety;
+    let abi = &sig.abi;
 
     let item = quote! {
-        #vis fn #ident #generics (#inputs) #output #where_clause {
-            use platform_aware_features::*;
+        #vis #constness #asyncness #unsafety #abi fn #ident #generics (#inputs) #output #where_clause {
             use std::sync::Arc;
             use std::collections::HashMap;
             use lazy_static::lazy_static;
@@ -276,6 +311,12 @@ fn generate_impl_dispatcher(
     syn::parse2(item).expect("Failed to parse impl dispatcher")
 }
 
+fn is_empty_assumption(tokens: &Option<proc_macro2::TokenStream>) -> bool {
+    match tokens {
+        None => true,
+        Some(t) => t.is_empty(),
+    }
+}
 
 fn has_assumptions(attrs: &[Attribute], attr_name: &str) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident(attr_name))
@@ -331,7 +372,7 @@ fn transform_tokens_to_hashmap(tokens: proc_macro2::TokenStream) -> proc_macro2:
         pairs.push(quote! {
             (
                 #key_str.to_string(),
-                std::sync::Arc::new(#value) as std::sync::Arc<dyn platform_aware_features::Feature>
+                std::sync::Arc::new(#value) as std::sync::Arc<dyn Feature>
             )
         });
     }
@@ -352,4 +393,3 @@ fn args_from_sig(sig: &Signature) -> proc_macro2::TokenStream {
     }).collect();
     quote! { #(#args),* }
 }
-
