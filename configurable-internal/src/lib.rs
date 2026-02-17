@@ -4,15 +4,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use syn::{
-    Attribute, FnArg, ImplItem, Item, ItemFn, ItemImpl, ItemMacro, ItemMod, Meta,
-    Signature, Visibility, parse2, spanned::Spanned
+    Attribute, FnArg, ImplItem, Item, ItemImpl, ItemMod, Meta,
+    Signature, Visibility, parse2
 };
 
 /// The core logic function.
 /// 
 /// This is exposed as a library function so that a proc-macro crate can call it
 /// with specific configuration (e.g. "assumptions" vs "kernelversion").
-pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &str) -> TokenStream {    
+pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &str, package_name: &str) -> TokenStream {    
     let mut item_mod = parse2::<ItemMod>(item).expect("Must be applied to a module");
 
     if let Err(e) = expand_includes(&mut item_mod, macro_name) {
@@ -39,7 +39,7 @@ pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &
                     }
                 }
                 Item::Impl(impl_block) => {
-                    let processed_blocks = process_impl_block(impl_block, attr_name);
+                    let processed_blocks = process_impl_block(impl_block, attr_name, package_name);
                     new_items.extend(processed_blocks);
                 }
                 _ => new_items.push(item),
@@ -47,7 +47,7 @@ pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &
         }
 
         for (name, variants) in fn_groups {
-            let dispatcher = generate_dispatch(&name, variants);
+            let dispatcher = generate_dispatch(&name, variants, package_name);
             new_items.extend(dispatcher);
         }
         
@@ -62,7 +62,7 @@ struct FunctionVariant {
     assumptions: Option<proc_macro2::TokenStream>,
 }
 
-fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str) -> Vec<Item> {
+fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str, package_name: &str) -> Vec<Item> {
     let mut method_groups: HashMap<String, Vec<ImplItem>> = HashMap::new();
     let mut methods_assumptions: HashMap<String, Vec<Option<proc_macro2::TokenStream>>> = HashMap::new();
     let mut other_items = Vec::new();
@@ -111,7 +111,7 @@ fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str) -> Vec<Item> {
             variants_to_add.push(method_item.clone());
         }
 
-        let dispatcher = generate_impl_dispatcher(&name, &master_sig, &vis, &variant_idents, &assumptions_list);
+        let dispatcher = generate_impl_dispatcher(&name, &master_sig, &vis, &variant_idents, &assumptions_list, package_name);
         other_items.push(dispatcher);
     }
 
@@ -174,7 +174,7 @@ fn read_included_file(path: &str) -> syn::Result<String> {
     })
 }
 
-fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>) -> Vec<Item> {
+fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>, package_name: &str) -> Vec<Item> {
     let mut items = Vec::new();
     let mut variant_names = Vec::new();
     let mut assumption_tokens = Vec::new();
@@ -225,11 +225,14 @@ fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>) -> Vec
     let unsafety = &master_sig.unsafety;
     let abi = &master_sig.abi;
 
+    let pn = <TokenStream as std::str::FromStr>::from_str(package_name).expect("invalid package name");
+
     let dispatcher = quote! {
         #master_vis #constness #asyncness #unsafety #abi fn #ident #generics (#inputs) #output #where_clause {
             use std::sync::Arc;
             use std::collections::HashMap;
             use lazy_static::lazy_static;
+            use #pn::{resolve,Feature};
 
             lazy_static! {
                 static ref SELECTED_VARIANT: i32 = {
@@ -253,7 +256,8 @@ fn generate_impl_dispatcher(
     sig: &Signature, 
     vis: &Visibility, 
     variants: &[proc_macro2::Ident], 
-    assumptions: &[Option<proc_macro2::TokenStream>]
+    assumptions: &[Option<proc_macro2::TokenStream>],
+    package_name: &str
 ) -> ImplItem {
     let platforms_vec = build_platforms_vec(assumptions);
     let args = args_from_sig(sig);
@@ -288,12 +292,14 @@ fn generate_impl_dispatcher(
     let asyncness = &sig.asyncness;
     let unsafety = &sig.unsafety;
     let abi = &sig.abi;
+    let pn = <TokenStream as std::str::FromStr>::from_str(package_name).expect("invalid package name");
 
     let item = quote! {
         #vis #constness #asyncness #unsafety #abi fn #ident #generics (#inputs) #output #where_clause {
             use std::sync::Arc;
             use std::collections::HashMap;
             use lazy_static::lazy_static;
+            use #pn::{resolve,Feature};
 
             lazy_static! {
                 static ref SELECTED_VARIANT: i32 = {
