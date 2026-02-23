@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use syn::{
-    Attribute, FnArg, ImplItem, Item, ItemImpl, ItemMod, Meta,
-    Signature, Visibility, parse2
+    Attribute, FnArg, ImplItem, Item, ItemFn, ItemImpl, ItemMacro, ItemMod, Meta,
+    Signature, Visibility, parse2, spanned::Spanned
 };
 
 /// The core logic function.
@@ -15,14 +15,18 @@ use syn::{
 pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &str, package_name: &str) -> TokenStream {    
     let mut item_mod = parse2::<ItemMod>(item).expect("Must be applied to a module");
 
-    if let Err(e) = expand_includes(&mut item_mod, macro_name) {
-        return e.into_compile_error().into();
-    }
-
     if let Some((_, ref mut items)) = item_mod.content {
+        if let Err(e) = expand_includes(items, macro_name) {
+            return e.into_compile_error().into();
+        }
+
         let mut new_items = Vec::new();
         
         let mut fn_groups: HashMap<String, Vec<FunctionVariant>> = HashMap::new();
+        let mut fn_order: Vec<String> = Vec::new();
+        
+        let mut impl_groups: HashMap<String, ItemImpl> = HashMap::new();
+        let mut impl_order: Vec<String> = Vec::new();
         
         for item in items.drain(..) {
             match item {
@@ -30,6 +34,11 @@ pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &
                     if has_assumptions(&func.attrs, attr_name) {
                         let name = func.sig.ident.to_string();
                         let assumptions = extract_assumptions(&mut func.attrs, attr_name);
+                        
+                        if !fn_groups.contains_key(&name) {
+                            fn_order.push(name.clone());
+                        }
+                        
                         fn_groups.entry(name).or_default().push(FunctionVariant {
                             item: Item::Fn(func),
                             assumptions,
@@ -38,17 +47,37 @@ pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &
                         new_items.push(Item::Fn(func));
                     }
                 }
-                Item::Impl(impl_block) => {
-                    let processed_blocks = process_impl_block(impl_block, attr_name, package_name);
-                    new_items.extend(processed_blocks);
+                Item::Impl(mut impl_block) => {
+                    let trait_str = if let Some((_, path, _)) = &impl_block.trait_ {
+                        path.to_token_stream().to_string()
+                    } else {
+                        String::new()
+                    };
+                    let type_str = impl_block.self_ty.to_token_stream().to_string();
+                    let generics_str = impl_block.generics.to_token_stream().to_string();
+                    let key = format!("{}|{}|{}", trait_str, type_str, generics_str);
+
+                    if let Some(existing) = impl_groups.get_mut(&key) {
+                        existing.items.append(&mut impl_block.items);
+                    } else {
+                        impl_order.push(key.clone());
+                        impl_groups.insert(key, impl_block);
+                    }
                 }
                 _ => new_items.push(item),
             }
         }
 
-        for (name, variants) in fn_groups {
+        for name in fn_order {
+            let variants = fn_groups.remove(&name).unwrap();
             let dispatcher = generate_dispatch(&name, variants, package_name);
             new_items.extend(dispatcher);
+        }
+
+        for key in impl_order {
+            let impl_block = impl_groups.remove(&key).unwrap();
+            let processed_blocks = process_impl_block(impl_block, attr_name, package_name);
+            new_items.extend(processed_blocks);
         }
         
         *items = new_items;
@@ -66,12 +95,17 @@ fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str, package_name: &
     let mut method_groups: HashMap<String, Vec<ImplItem>> = HashMap::new();
     let mut methods_assumptions: HashMap<String, Vec<Option<proc_macro2::TokenStream>>> = HashMap::new();
     let mut other_items = Vec::new();
+    let mut method_order = Vec::new();
 
     for item in impl_block.items.drain(..) {
         if let ImplItem::Fn(mut method) = item {
             if has_assumptions(&method.attrs, attr_name) {
                 let name = method.sig.ident.to_string();
                 let assumptions = extract_assumptions(&mut method.attrs, attr_name);
+                
+                if !method_groups.contains_key(&name) {
+                    method_order.push(name.clone());
+                }
                 
                 methods_assumptions.entry(name.clone()).or_default().push(assumptions);
                 method_groups.entry(name).or_default().push(ImplItem::Fn(method));
@@ -85,10 +119,11 @@ fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str, package_name: &
 
     let mut variants_to_add: Vec<ImplItem> = Vec::new();
 
-    for (name, mut methods) in method_groups {
+    for name in method_order {
+        let mut methods = method_groups.remove(&name).unwrap();
         let assumptions_list = methods_assumptions
             .remove(&name)
-            .expect(&format!("Mismatched assumptions for methoded: {}", name));
+            .expect(&format!("Mismatched assumptions for method: {}", name));
         
         let master_sig = if let ImplItem::Fn(m) = &methods[0] { m.sig.clone() } else { unreachable!() };
         let vis = if let ImplItem::Fn(m) = &methods[0] { m.vis.clone() } else { unreachable!() };
@@ -136,42 +171,98 @@ fn process_impl_block(mut impl_block: ItemImpl, attr_name: &str, package_name: &
     result_items
 }
 
-fn expand_includes(item_mod: &mut ItemMod, macro_name: &str) -> syn::Result<()> {
-    if let Some((_, ref mut items)) = item_mod.content {
-        let mut i = 0;
-        while i < items.len() {
-            let should_expand = if let Item::Macro(mac) = &items[i] {
-                mac.mac.path.is_ident(macro_name)
-            } else {
-                false
-            };
-
-            if should_expand {
-                let item = items.remove(i);
-                if let Item::Macro(mac) = item {
-                    let path_str: syn::LitStr = mac.mac.parse_body()?;
-                    let file_content = read_included_file(&path_str.value())?;
-                    let file_ast: syn::File = syn::parse_str(&file_content)?;
-                    
-                    for new_item in file_ast.items.into_iter().rev() {
-                        items.insert(i, new_item);
-                    }
-                    continue; 
-                }
-            }
-            i += 1;
+fn expand_includes(items: &mut Vec<Item>, macro_name: &str) -> syn::Result<()> {
+    let mut i = 0;
+    while i < items.len() {
+        if let Item::Impl(impl_block) = &mut items[i] {
+            expand_impl_includes(impl_block, macro_name)?;
         }
+
+        let should_expand = if let Item::Macro(mac) = &items[i] {
+            mac.mac.path.is_ident(macro_name)
+        } else {
+            false
+        };
+
+        if should_expand {
+            let item = items.remove(i);
+            if let Item::Macro(mac) = item {
+                let path_str: syn::LitStr = mac.mac.parse_body()?;
+                let file_content = read_included_file(&path_str.value(), mac.mac.span())?;
+                let file_ast: syn::File = syn::parse_str(&file_content).map_err(|e| {
+                    syn::Error::new(mac.mac.span(), format!("Failed to parse included file {:?}: {}", path_str.value(), e))
+                })?;
+                
+                for new_item in file_ast.items.into_iter().rev() {
+                    items.insert(i, new_item);
+                }
+                continue; 
+            }
+        }
+        i += 1;
     }
     Ok(())
 }
 
-fn read_included_file(path: &str) -> syn::Result<String> {
-    let mut file_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    file_path.push(path);
+fn expand_impl_includes(impl_block: &mut ItemImpl, macro_name: &str) -> syn::Result<()> {
+    let mut i = 0;
+    while i < impl_block.items.len() {
+        let should_expand = if let ImplItem::Macro(mac) = &impl_block.items[i] {
+            mac.mac.path.is_ident(macro_name)
+        } else {
+            false
+        };
 
-    fs::read_to_string(&file_path).map_err(|e| {
-        syn::Error::new(proc_macro2::Span::call_site(), format!("Failed to read file {:?}: {}", file_path, e))
-    })
+        if should_expand {
+            let item = impl_block.items.remove(i);
+            if let ImplItem::Macro(mac) = item {
+                let path_str: syn::LitStr = mac.mac.parse_body()?;
+                let file_content = read_included_file(&path_str.value(), mac.mac.span())?;
+                
+                // Wrap the file contents in a dummy implementation so it can be parsed as a collection of ImplItem elements
+                let dummy_code = format!("impl Dummy {{ {} }}", file_content);
+                let dummy_impl: syn::ItemImpl = syn::parse_str(&dummy_code).map_err(|e| {
+                    syn::Error::new(mac.mac.span(), format!("Failed to parse included impl items from {:?}: {}", path_str.value(), e))
+                })?;
+                
+                for new_item in dummy_impl.items.into_iter().rev() {
+                    impl_block.items.insert(i, new_item);
+                }
+                continue; 
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+fn read_included_file(path: &str, span: proc_macro2::Span) -> syn::Result<String> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    
+    let mut paths_to_try = Vec::new();
+
+    // 1. Try directly (works for absolute paths)
+    paths_to_try.push(PathBuf::from(path));
+
+    // 2. Try relative to the crate root (CARGO_MANIFEST_DIR)
+    let mut p1 = PathBuf::from(&manifest_dir);
+    p1.push(path);
+    paths_to_try.push(p1);
+
+    // 3. Try relative to the `src` folder (where users typically place their files)
+    let mut p2 = PathBuf::from(&manifest_dir);
+    p2.push("src");
+    p2.push(path);
+    paths_to_try.push(p2);
+
+    for p in &paths_to_try {
+        if let Ok(content) = fs::read_to_string(p) {
+            return Ok(content);
+        }
+    }
+
+    let tried_paths: Vec<String> = paths_to_try.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    Err(syn::Error::new(span, format!("Failed to read file '{}'. Tried locations: {:?}", path, tried_paths)))
 }
 
 fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>, package_name: &str) -> Vec<Item> {
@@ -232,7 +323,7 @@ fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>, packag
             use std::sync::Arc;
             use std::collections::HashMap;
             use lazy_static::lazy_static;
-            use #pn::{resolve,Feature};
+            use #pn::{resolve, Feature};
 
             lazy_static! {
                 static ref SELECTED_VARIANT: i32 = {
@@ -247,7 +338,7 @@ fn generate_dispatch(original_name: &str, variants: Vec<FunctionVariant>, packag
         }
     };
 
-    items.push(syn::parse2(dispatcher).expect("Failed to parse dispatcher"));
+    items.push(syn::parse2(dispatcher).unwrap());
     items
 }
 
@@ -299,7 +390,7 @@ fn generate_impl_dispatcher(
             use std::sync::Arc;
             use std::collections::HashMap;
             use lazy_static::lazy_static;
-            use #pn::{resolve,Feature};
+            use #pn::{resolve, Feature};
 
             lazy_static! {
                 static ref SELECTED_VARIANT: i32 = {
