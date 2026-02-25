@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, ToTokens};
-use std::collections::HashMap;
+use std::{collections::HashMap, path};
 use std::fs;
 use std::path::PathBuf;
 use syn::{
@@ -12,11 +12,11 @@ use syn::{
 /// 
 /// This is exposed as a library function so that a proc-macro crate can call it
 /// with specific configuration (e.g. "assumptions" vs "kernelversion").
-pub fn __internal_configurable(item: TokenStream, macro_name: &str, attr_name: &str, package_name: &str) -> TokenStream {    
+pub fn __internal_configurable(item: TokenStream, macro_name: &str, mod_name: &str, attr_name: &str, package_name: &str) -> TokenStream {    
     let mut item_mod = parse2::<ItemMod>(item).expect("Must be applied to a module");
 
     if let Some((_, ref mut items)) = item_mod.content {
-        if let Err(e) = expand_includes(items, macro_name) {
+        if let Err(e) = expand_includes(items, mod_name) {
             return e.into_compile_error().into();
         }
 
@@ -187,7 +187,13 @@ fn expand_includes(items: &mut Vec<Item>, macro_name: &str) -> syn::Result<()> {
         if should_expand {
             let item = items.remove(i);
             if let Item::Macro(mac) = item {
-                let path_str: syn::LitStr = mac.mac.parse_body()?;
+
+                let current_module_path = mac.mac.span().unwrap().file();
+                let current_directory = path::Path::new(&current_module_path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let pmodule_name: syn::Ident = mac.mac.parse_body()?;
+                let path_str_1 = format!("{}/{}.rs", current_directory, pmodule_name.to_string());
+                let path_str = syn::LitStr::new(&path_str_1, pmodule_name.span());
+
                 let file_content = read_included_file(&path_str.value(), mac.mac.span())?;
                 let file_ast: syn::File = syn::parse_str(&file_content).map_err(|e| {
                     syn::Error::new(mac.mac.span(), format!("Failed to parse included file {:?}: {}", path_str.value(), e))
