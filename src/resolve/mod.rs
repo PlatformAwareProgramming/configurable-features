@@ -1,10 +1,34 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::{Arc, Mutex}, time::{Duration, Instant}};
+
+use once_cell::sync::Lazy;
+
+use std::thread;
 
 use crate::{CURRENT_FEATURES, Feature, PLATFORM_PARAMETERS, PlatformParameter, featuremap::FEATURE_MAP};
+
+static RESOLVE_TIME: Lazy<Mutex<Duration>> = Lazy::new(|| Mutex::new(Duration::ZERO));
+
+struct ResolveTimer(Instant);
+
+impl Drop for ResolveTimer {
+    fn drop(&mut self) {
+        let mut total = RESOLVE_TIME.lock().unwrap_or_else(|error| error.into_inner());
+        *total += self.0.elapsed();
+    }
+}
+
+/// Returns the total time spent in [`resolve`] during this process, in milliseconds.
+pub fn get_resolve_time_ms() -> u128 {
+    RESOLVE_TIME.lock().unwrap_or_else(|error| error.into_inner()).as_millis()
+}
 
 // The glorious resolution algorithm
 pub fn resolve(featureset_list:Vec<HashMap<PlatformParameter, Arc<dyn Feature>>> ) -> i32
 {
+    let _timer = ResolveTimer(Instant::now());
+
+    println!("RESOLVE - Waiting for 1 seconds...");
+    thread::sleep(Duration::from_secs(1));
     // println!("ENTER RESOLVE");
 
     let actualplatformfeatures: HashMap<PlatformParameter, Arc<dyn Feature>> = CURRENT_FEATURES.lock().unwrap().clone();
