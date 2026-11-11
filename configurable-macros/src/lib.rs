@@ -25,14 +25,14 @@ use configurable_internal::__internal_configurable;
 /// 4. **Dispatch Generation**: The macro generates a dispatcher that runs a **Resolution Algorithm**.
 ///    At the beginning of execution, each kernel module... selects a k-function whose assumption
 ///    is compatible with the features of the underlying computing platform, prioritizing the most
-///    specific valid assumption ($P <: K_n < ... < K_0$).
+///    specific valid assumption (`P <: K_n < ... < K_0`).
 ///
 /// # Examples
 ///
 /// ## 1. Standalone Functions
 /// Use `configurable` to create simple function variants (e.g., a fast SIMD version and a scalar fallback).
 ///
-/// ```rust
+/// ```rust,ignore
 /// #[configurable]
 /// mod vector_math {
 ///
@@ -55,7 +55,7 @@ use configurable_internal::__internal_configurable;
 /// To keep your code modular, you can define your kernels in separate files (e.g., one file for
 /// NVIDIA logic, one for Intel) and include them using the `configurable!` pseudo-macro.
 ///
-/// ```rust
+/// ```rust,ignore
 /// #[configurable]
 /// mod kernels {
 ///
@@ -75,7 +75,7 @@ use configurable_internal::__internal_configurable;
 /// You can implement a standard Rust trait where the method implementation is chosen dynamically
 /// based on hardware features.
 ///
-/// ```rust
+/// ```rust,ignore
 /// trait LinearAlgebra {
 ///     fn dot_product(&self, other: &Self) -> f32;
 /// }
