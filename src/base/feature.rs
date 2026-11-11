@@ -1,6 +1,3 @@
-//mod quantifier;
-
-
 use crate::{PlatformParameter, QuantifierType};
 
 use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}, sync::Arc};
@@ -17,7 +14,6 @@ pub trait Feature: Send + Sync {
         self.string().hash(&mut s);
         s.finish()
     }
-    
 }
 
 
@@ -36,20 +32,21 @@ pub enum FeatureObj {
     Qualifier(Arc<dyn Feature>),
     QualifierVec(Vec<Arc<dyn QualifierFeature>>),
     Quantifier(Arc<dyn QuantifierFeature>),
-
 }
 
 impl FeatureObj {
-
     pub fn subtypeof(&self, other: &FeatureObj) -> bool {
-       // if self.feature_class() != other.feature_class() { return false; }
-
         match (self, other) {
             (FeatureObj::Qualifier(a), FeatureObj::Qualifier(b)) => {
-                if a.hash_code() == b.hash_code() { return true; }
+                let target = b.string();
+                if a.string() == target {
+                    return true;
+                }
                 let mut s = a.supertype();
                 while let Some(ref sup) = s {
-                    if sup.hash_code() == b.hash_code() { return true; }
+                    if sup.string() == target {
+                        return true;
+                    }
                     s = sup.supertype();
                 }
                 false
