@@ -76,7 +76,7 @@ create_feature_hierarchy! {
 }
 ```
 
-This establishes the transitive subtyping relation (e.g., $\text{AVX512} <: \text{AVX2} <: \text{AVX} <: \text{CPUSIMD}$ and $\text{NVIDIA\_GPU\_A100} <: \text{NVIDIA\_GPU\_Ada} <: \text{NVIDIA\_GPU} <: \text{ACCModel}$) and automatically registers the qualifiers in the global feature catalog at startup.
+This establishes the transitive subtyping relation (e.g., `AVX512 <: AVX2 <: AVX <: CPUSIMD` and `NVIDIA_GPU_A100 <: NVIDIA_GPU_Ada <: NVIDIA_GPU <: ACCModel`) and automatically registers the qualifiers in the global feature catalog at startup.
 
 ### 3. Full Quantifiers
 
