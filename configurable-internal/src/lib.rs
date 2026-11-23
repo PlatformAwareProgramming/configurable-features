@@ -73,14 +73,18 @@ pub fn __internal_configurable(
 
         for name in fn_order {
             let variants = fn_groups.remove(&name).unwrap();
-            let dispatcher = generate_dispatch(&name, variants, package_name);
-            new_items.extend(dispatcher);
+            match generate_dispatch(&name, variants, attr_name, package_name) {
+                Ok(dispatcher) => new_items.extend(dispatcher),
+                Err(e) => return e.into_compile_error(),
+            }
         }
 
-        for key in impl_order {
+        for (impl_idx, key) in impl_order.into_iter().enumerate() {
             let impl_block = impl_groups.remove(&key).unwrap();
-            let processed_blocks = process_impl_block(impl_block, attr_name, package_name);
-            new_items.extend(processed_blocks);
+            match process_impl_block(impl_block, impl_idx, attr_name, package_name) {
+                Ok(processed_blocks) => new_items.extend(processed_blocks),
+                Err(e) => return e.into_compile_error(),
+            }
         }
 
         *items = new_items;
