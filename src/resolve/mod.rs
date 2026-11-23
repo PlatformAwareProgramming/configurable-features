@@ -5,11 +5,13 @@ use crate::{Feature, PlatformFeatures, PlatformParameter, PlatformRegistry};
 /// Pure resolution algorithm decoupled from global state.
 ///
 /// Evaluates `candidates` in reverse declaration order against `actual_features`
-/// over the given `parameters`, returning the index of the strongest compatible
-/// candidate (`P <: K_n <: ... <: K_0 <: ⊤`), or `-1` if none is compatible.
-pub fn resolve_for_platform(
+/// over the given `parameters` and weakest assumptions (`top_features`), returning
+/// the index of the strongest compatible candidate (`P <: K_n <: ... <: K_0 <: ⊤`),
+/// or `-1` if none is compatible.
+pub fn resolve_for_platform_with_tops(
     actual_features: &PlatformFeatures,
     parameters: &[PlatformParameter],
+    top_features: &PlatformFeatures,
     candidates: &[PlatformFeatures],
 ) -> i32 {
     if candidates.is_empty() {
@@ -22,13 +24,27 @@ pub fn resolve_for_platform(
 
     while i >= 0 {
         while i >= 0
-            && !(is_subtype_of_with_params(actual_features, &candidates[i as usize], parameters)
-                && (current_choice.is_none()
-                    || is_subtype_of_with_params(
+            && !(is_subtype_of_with_tops(
+                actual_features,
+                &candidates[i as usize],
+                parameters,
+                top_features,
+            ) && match current_choice {
+                None => true,
+                Some(choice) => {
+                    is_subtype_of_with_tops(
                         &candidates[i as usize],
-                        current_choice.unwrap(),
+                        choice,
                         parameters,
-                    )))
+                        top_features,
+                    ) && !is_subtype_of_with_tops(
+                        choice,
+                        &candidates[i as usize],
+                        parameters,
+                        top_features,
+                    )
+                }
+            })
         {
             i -= 1;
         }
@@ -43,25 +59,35 @@ pub fn resolve_for_platform(
     current_choice_index
 }
 
-/// Pure platform-type subtyping check (`lhs <: rhs`) over the given `parameters`.
-pub fn is_subtype_of_with_params(
+/// Pure resolution algorithm without an explicit weakest-assumption map.
+pub fn resolve_for_platform(
+    actual_features: &PlatformFeatures,
+    parameters: &[PlatformParameter],
+    candidates: &[PlatformFeatures],
+) -> i32 {
+    let empty_tops = PlatformFeatures::new();
+    resolve_for_platform_with_tops(actual_features, parameters, &empty_tops, candidates)
+}
+
+/// Pure platform-type subtyping check (`lhs <: rhs`) over `parameters`, substituting
+/// each omitted parameter on `lhs` with its weakest assumption from `top_features`.
+pub fn is_subtype_of_with_tops(
     lhs: &PlatformFeatures,
     rhs: &PlatformFeatures,
     parameters: &[PlatformParameter],
+    top_features: &PlatformFeatures,
 ) -> bool {
     for p in parameters {
         let vl = lhs.get(p);
         let vr = rhs.get(p);
 
-        let issubtype = match vl {
-            None => match vr {
-                Some(vrt) => vrt.supertype().is_none(),
-                None => true,
+        let issubtype = match (vl, vr) {
+            (None, None) | (Some(_), None) => true,
+            (None, Some(vrt)) => match top_features.get(p) {
+                Some(top) => top.feature_obj().subtypeof(&vrt.feature_obj()),
+                None => vrt.supertype().is_none(),
             },
-            Some(vlt) => match vr {
-                Some(vrt) => vlt.feature_obj().subtypeof(&vrt.feature_obj()),
-                None => true,
-            },
+            (Some(vlt), Some(vrt)) => vlt.feature_obj().subtypeof(&vrt.feature_obj()),
         };
         if !issubtype {
             return false;
@@ -71,12 +97,23 @@ pub fn is_subtype_of_with_params(
     true
 }
 
+/// Pure platform-type subtyping check (`lhs <: rhs`) over the given `parameters`.
+pub fn is_subtype_of_with_params(
+    lhs: &PlatformFeatures,
+    rhs: &PlatformFeatures,
+    parameters: &[PlatformParameter],
+) -> bool {
+    let empty_tops = PlatformFeatures::new();
+    is_subtype_of_with_tops(lhs, rhs, parameters, &empty_tops)
+}
+
 // The glorious resolution algorithm
 pub fn resolve(featureset_list: Vec<HashMap<PlatformParameter, Arc<dyn Feature>>>) -> i32 {
     let actual_features = PlatformRegistry::current_features();
     let parameters = PlatformRegistry::parameters();
+    let top_features = PlatformRegistry::top_features();
 
-    resolve_for_platform(&actual_features, &parameters, &featureset_list)
+    resolve_for_platform_with_tops(&actual_features, &parameters, &top_features, &featureset_list)
 }
 
 // check whether the left set of features is a subtype of the right set of features (compatibilty relation)
@@ -85,7 +122,8 @@ pub fn issubtypeof(
     rhs: &HashMap<PlatformParameter, Arc<dyn Feature>>,
 ) -> bool {
     let parameters = PlatformRegistry::parameters();
-    is_subtype_of_with_params(lhs, rhs, &parameters)
+    let top_features = PlatformRegistry::top_features();
+    is_subtype_of_with_tops(lhs, rhs, &parameters, &top_features)
 }
 
 #[cfg(test)]
@@ -165,6 +203,132 @@ mod tests {
         // v2 <: v3, so the algorithm refines the choice from v3 to v2 (index 2)!
         let candidates = vec![v0, v1, v2, v3, v4];
         assert_eq!(resolve_for_platform(&actual, &params, &candidates), 2);
+    }
+
+    #[test]
+    fn test_exact_value_candidate_not_overridden_by_fallback_or_missing_feature() {
+        let params = vec!["acc_count".to_string()];
+        let tops: PlatformFeatures = HashMap::from([(
+            "acc_count".to_string(),
+            Arc::new(AtLeast { val: 0 }) as Arc<dyn Feature>,
+        )]);
+
+        let v0_fallback: PlatformFeatures = HashMap::new();
+        let v1_exact: PlatformFeatures = HashMap::from([(
+            "acc_count".to_string(),
+            Arc::new(2i32) as Arc<dyn Feature>,
+        )]);
+        let candidates = vec![v0_fallback.clone(), v1_exact.clone()];
+
+        // Fallback (⊤) must NOT be a subtype of an exact-value assumption
+        assert!(!is_subtype_of_with_tops(&v0_fallback, &v1_exact, &params, &tops));
+        assert!(!is_subtype_of_with_params(&v0_fallback, &v1_exact, &params));
+
+        // Platform with acc_count = 2 must select v1_exact (index 1), not fallback
+        let actual_two: PlatformFeatures = HashMap::from([(
+            "acc_count".to_string(),
+            Arc::new(2i32) as Arc<dyn Feature>,
+        )]);
+        assert_eq!(
+            resolve_for_platform_with_tops(&actual_two, &params, &tops, &candidates),
+            1
+        );
+        assert_eq!(resolve_for_platform(&actual_two, &params, &candidates), 1);
+
+        // Platform omitting acc_count must NOT match v1_exact; it must select fallback (index 0)
+        let actual_missing: PlatformFeatures = HashMap::new();
+        assert_eq!(
+            resolve_for_platform_with_tops(&actual_missing, &params, &tops, &candidates),
+            0
+        );
+        assert_eq!(resolve_for_platform(&actual_missing, &params, &candidates), 0);
+    }
+
+    #[test]
+    fn test_omitted_parameter_satisfies_explicit_weakest_assumption_from_top_features() {
+        let params = vec!["acc_count".to_string(), "acc_tdp".to_string()];
+        let tops: PlatformFeatures = HashMap::from([
+            (
+                "acc_count".to_string(),
+                Arc::new(AtLeast { val: 0 }) as Arc<dyn Feature>,
+            ),
+            (
+                "acc_tdp".to_string(),
+                Arc::new(AtMost { val: i32::MAX }) as Arc<dyn Feature>,
+            ),
+        ]);
+
+        let actual_omitted: PlatformFeatures = HashMap::new();
+        let v0_fallback: PlatformFeatures = HashMap::new();
+        let v1_explicit_weakest: PlatformFeatures = HashMap::from([
+            (
+                "acc_count".to_string(),
+                Arc::new(AtLeast { val: 0 }) as Arc<dyn Feature>,
+            ),
+            (
+                "acc_tdp".to_string(),
+                Arc::new(AtMost { val: i32::MAX }) as Arc<dyn Feature>,
+            ),
+        ]);
+        let v2_stronger: PlatformFeatures = HashMap::from([(
+            "acc_count".to_string(),
+            Arc::new(AtLeast { val: 1 }) as Arc<dyn Feature>,
+        )]);
+
+        assert!(is_subtype_of_with_tops(
+            &actual_omitted,
+            &v1_explicit_weakest,
+            &params,
+            &tops
+        ));
+        assert!(!is_subtype_of_with_tops(
+            &actual_omitted,
+            &v2_stronger,
+            &params,
+            &tops
+        ));
+
+        // v1 has the same platform type as v0 (⊤) and is declared later, so v1 keeps precedence
+        let candidates = vec![v0_fallback, v1_explicit_weakest, v2_stronger];
+        assert_eq!(
+            resolve_for_platform_with_tops(&actual_omitted, &params, &tops, &candidates),
+            1
+        );
+    }
+
+    #[test]
+    fn test_atmost_and_atleast_not_subtypes_of_exact_value_during_resolution() {
+        let params = vec!["cpu_core_count".to_string()];
+        let tops: PlatformFeatures = HashMap::from([(
+            "cpu_core_count".to_string(),
+            Arc::new(AtLeast { val: 1 }) as Arc<dyn Feature>,
+        )]);
+        let actual_four: PlatformFeatures = HashMap::from([(
+            "cpu_core_count".to_string(),
+            Arc::new(4i32) as Arc<dyn Feature>,
+        )]);
+
+        let v0_fallback: PlatformFeatures = HashMap::new();
+        let v1_atmost4: PlatformFeatures = HashMap::from([(
+            "cpu_core_count".to_string(),
+            Arc::new(AtMost { val: 4 }) as Arc<dyn Feature>,
+        )]);
+        let v2_atleast4: PlatformFeatures = HashMap::from([(
+            "cpu_core_count".to_string(),
+            Arc::new(AtLeast { val: 4 }) as Arc<dyn Feature>,
+        )]);
+        let v3_exact4: PlatformFeatures = HashMap::from([(
+            "cpu_core_count".to_string(),
+            Arc::new(4i32) as Arc<dyn Feature>,
+        )]);
+
+        // Exact 4 is strictly stronger than both AtMost{4} and AtLeast{4};
+        // neither AtMost{4} nor AtLeast{4} may override Exact 4.
+        let candidates = vec![v0_fallback, v1_atmost4, v2_atleast4, v3_exact4];
+        assert_eq!(
+            resolve_for_platform_with_tops(&actual_four, &params, &tops, &candidates),
+            3
+        );
     }
 }
 

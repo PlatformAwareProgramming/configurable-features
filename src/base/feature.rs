@@ -62,26 +62,61 @@ impl FeatureObj {
                 let v_other = b.val();
                 let qt_self = a.quantifier_type();
                 let qt_other = b.quantifier_type();
-                match qt_self {
-                    QuantifierType::AtLeast => match qt_other {
-                        QuantifierType::AtLeast => v_self >= v_other,
-                        QuantifierType::AtMost => false,
-                        QuantifierType::ExactValue => v_self == v_other,
-                    },
-                    QuantifierType::AtMost => match qt_other {
-                        QuantifierType::AtLeast => false,
-                        QuantifierType::AtMost => v_self <= v_other,
-                        QuantifierType::ExactValue => v_self <= v_other,
-                    },
-                    QuantifierType::ExactValue => match qt_other {
-                        QuantifierType::AtLeast => v_self >= v_other ,
-                        QuantifierType::AtMost => v_self <= v_other,
-                        QuantifierType::ExactValue => v_self == v_other,
-                    },
+                match (qt_self, qt_other) {
+                    (QuantifierType::AtLeast, QuantifierType::AtLeast) => v_self >= v_other,
+                    (QuantifierType::AtMost, QuantifierType::AtMost) => v_self <= v_other,
+                    (QuantifierType::ExactValue, QuantifierType::AtLeast) => v_self >= v_other,
+                    (QuantifierType::ExactValue, QuantifierType::AtMost) => v_self <= v_other,
+                    (QuantifierType::ExactValue, QuantifierType::ExactValue) => v_self == v_other,
+                    _ => false,
                 }
             }
             // qualifier vs quantifier: not comparable (or define your own rule)
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AtLeast, AtMost};
+
+    #[test]
+    fn test_quantifier_subtyping_rules() {
+        let al4 = AtLeast { val: 4 }.feature_obj();
+        let al8 = AtLeast { val: 8 }.feature_obj();
+        let am4 = AtMost { val: 4 }.feature_obj();
+        let am8 = AtMost { val: 8 }.feature_obj();
+        let ex4 = 4i32.feature_obj();
+        let ex8 = 8i32.feature_obj();
+
+        // AtLeast{m} <: AtLeast{n} iff m >= n
+        assert!(al8.subtypeof(&al4));
+        assert!(al4.subtypeof(&al4));
+        assert!(!al4.subtypeof(&al8));
+
+        // AtMost{m} <: AtMost{n} iff m <= n
+        assert!(am4.subtypeof(&am8));
+        assert!(am4.subtypeof(&am4));
+        assert!(!am8.subtypeof(&am4));
+
+        // m <: AtLeast{n} iff m >= n; m <: AtMost{n} iff m <= n; m <: n iff m == n
+        assert!(ex8.subtypeof(&al4));
+        assert!(ex4.subtypeof(&al4));
+        assert!(!ex4.subtypeof(&al8));
+        assert!(ex4.subtypeof(&am8));
+        assert!(ex4.subtypeof(&am4));
+        assert!(!ex8.subtypeof(&am4));
+        assert!(ex4.subtypeof(&ex4));
+        assert!(!ex4.subtypeof(&ex8));
+
+        // Interval quantifiers are never subtypes of an exact value or of the opposite bound
+        assert!(!al4.subtypeof(&ex4));
+        assert!(!al8.subtypeof(&ex8));
+        assert!(!am4.subtypeof(&ex4));
+        assert!(!am4.subtypeof(&ex8));
+        assert!(!al4.subtypeof(&am8));
+        assert!(!am4.subtypeof(&al4));
     }
 }
