@@ -1,19 +1,11 @@
-[workspace]
-resolver="2"
-members = [".", "configurable-macros", "configurable-internal"]
-
 [package]
 name = "configurable-features"
 version = "0.1.0"
 edition = "2024"
 
-[workspace.dependencies]
-configurable-macros = {path="configurable-macros"}
-configurable-internal = {path="configurable-internal"}
-
 [dependencies]
-configurable-macros = {workspace=true}
-configurable-internal = {workspace=true}
+configurable-macros = { path = "configurable-macros" }
+configurable-internal = { path = "configurable-internal" }
 ctor = "0.6.0"
 paste = "1.0.15"
 serde = "1.0.228"
