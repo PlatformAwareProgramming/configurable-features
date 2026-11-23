@@ -1,6 +1,6 @@
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Once};
 use std::{env, fs};
 use std::error::Error;
 
@@ -12,6 +12,47 @@ pub static CURRENT_FEATURES: LazyLock<Mutex<PlatformFeatures>> = LazyLock::new(|
     let m = HashMap::new();
     Mutex::new(m)
 });
+
+type FeatureLoader = Box<dyn Fn() -> PlatformFeatures + Send + Sync>;
+
+static FEATURE_LOADERS: LazyLock<Mutex<Vec<FeatureLoader>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+static FEATURES_LOADED: Once = Once::new();
+
+/// Registers a deferred loader that extracts features from `Platform.toml`.
+///
+/// Loaders are executed lazily on first access to `PlatformRegistry::current_features()`,
+/// after all `#[ctor]` qualifier registrations across core, vendor, and third-party crates
+/// have completed.
+pub fn register_feature_loader<F>(loader: F)
+where
+    F: Fn() -> PlatformFeatures + Send + Sync + 'static,
+{
+    FEATURE_LOADERS.lock().unwrap().push(Box::new(loader));
+}
+
+/// Runs all registered feature loaders once and merges their results into `CURRENT_FEATURES`.
+pub fn ensure_features_loaded() {
+    FEATURES_LOADED.call_once(|| {
+        let mut merged = PlatformFeatures::new();
+        {
+            let loaders = FEATURE_LOADERS.lock().unwrap();
+            if loaders.is_empty() {
+                return;
+            }
+            for loader in loaders.iter() {
+                merged.extend(loader());
+            }
+        }
+        CURRENT_FEATURES.lock().unwrap().extend(merged);
+    });
+}
+
+/// Marks deferred feature loading as already satisfied (used when features are set explicitly).
+pub(crate) fn mark_features_loaded() {
+    FEATURES_LOADED.call_once(|| {});
+}
 
 static CURRENT_CONFIG_STRING: LazyLock<Option<String>> = LazyLock::new(|| {
     readplatformfilecontents().ok()

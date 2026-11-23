@@ -19,10 +19,12 @@ pub use base::{
 };
 pub use registry::PlatformRegistry;
 pub use platformfile::{
-    CURRENT_FEATURES, add_qualifier, add_quantifier, readplatform,
+    CURRENT_FEATURES, add_qualifier, add_quantifier, ensure_features_loaded, readplatform,
+    register_feature_loader,
 };
 pub use resolve::{
-    is_subtype_of_with_params, issubtypeof, resolve, resolve_for_platform,
+    is_subtype_of_with_params, is_subtype_of_with_tops, issubtypeof, resolve,
+    resolve_for_platform, resolve_for_platform_with_tops,
 };
 pub use featuremap::{insert_feature, lookup_feature};
 pub use configurable_macros::configurable;

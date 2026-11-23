@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     CURRENT_FEATURES, FEATURE_TOP, Feature, PLATFORM_PARAMETERS, PlatformFeatures,
-    PlatformParameter, QualifierFeature, insert_feature, insert_parameter, lookup_feature,
+    PlatformParameter, QualifierFeature, ensure_features_loaded, insert_feature, insert_parameter,
+    lookup_feature, platformfile::mark_features_loaded, register_feature_loader,
 };
 
 /// Cohesive facade for managing the global platform model and active feature set.
@@ -37,13 +38,24 @@ impl PlatformRegistry {
         lookup_feature(name)
     }
 
-    /// Returns a snapshot of the actual platform feature set (P).
+    /// Registers a deferred loader to populate `CURRENT_FEATURES` on first access.
+    pub fn register_feature_loader<F>(loader: F)
+    where
+        F: Fn() -> PlatformFeatures + Send + Sync + 'static,
+    {
+        register_feature_loader(loader);
+    }
+
+    /// Returns a snapshot of the actual platform feature set (P), running deferred
+    /// feature loaders on first access so all crate `#[ctor]` registrations are visible.
     pub fn current_features() -> PlatformFeatures {
+        ensure_features_loaded();
         CURRENT_FEATURES.lock().unwrap().clone()
     }
 
     /// Replaces the actual platform feature set (P).
     pub fn set_current_features(features: PlatformFeatures) {
+        mark_features_loaded();
         *CURRENT_FEATURES.lock().unwrap() = features;
     }
 }
@@ -65,5 +77,53 @@ mod tests {
 
         let tops = PlatformRegistry::top_features();
         assert_eq!(tops.get(&param_name).unwrap().string(), "atleast 2");
+    }
+
+    #[test]
+    fn test_deferred_feature_loader_sees_qualifiers_registered_after_loader() {
+        use std::collections::HashMap;
+        use crate::{FeatureObj, add_qualifier};
+
+        #[derive(Clone)]
+        struct LateVendorFeature;
+
+        impl Feature for LateVendorFeature {
+            fn feature_obj(&self) -> FeatureObj {
+                FeatureObj::Qualifier(Arc::new(self.clone()))
+            }
+            fn string(&self) -> String {
+                "__late_vendor_feature__".to_string()
+            }
+        }
+
+        impl QualifierFeature for LateVendorFeature {
+            fn feature_class(&self) -> PlatformParameter {
+                "__late_vendor_param__".to_string()
+            }
+        }
+
+        // Simulate core crate registering its Platform.toml loader before a vendor crate's #[ctor]
+        PlatformRegistry::register_feature_loader(|| {
+            let mut m = HashMap::new();
+            add_qualifier(
+                &mut m,
+                "__late_vendor_param__".to_string(),
+                "__late_vendor_feature__".to_string(),
+            );
+            m
+        });
+
+        // Simulate vendor/third-party crate registering its qualifier afterwards
+        PlatformRegistry::register_qualifier(Arc::new(LateVendorFeature));
+
+        // First access to current_features() executes the deferred loader after all registrations
+        let features = PlatformRegistry::current_features();
+        assert_eq!(
+            features
+                .get("__late_vendor_param__")
+                .expect("deferred loader should resolve qualifier registered afterwards")
+                .string(),
+            "__late_vendor_feature__"
+        );
     }
 }
