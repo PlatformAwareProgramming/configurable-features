@@ -70,9 +70,27 @@ pub(crate) fn expand_includes(items: &mut Vec<Item>, mod_name: &str) -> syn::Res
                     )
                 })?;
 
+                // Register the included file in rustc's dep-info (.d) so Cargo tracks
+                // edits to external platform modules during incremental/warm builds.
+                // The unreferenced anonymous constant is stripped by LLVM at zero runtime cost.
+                let dep_path = fs::canonicalize(&loaded_path)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or(loaded_path);
+                let dep_anchor: Item = syn::parse_str(&format!(
+                    "const _: &[u8] = include_bytes!({:?});",
+                    dep_path
+                ))
+                .map_err(|e| {
+                    syn::Error::new(
+                        mac.mac.span(),
+                        format!("Failed to build dep-info anchor for {:?}: {}", dep_path, e),
+                    )
+                })?;
+
                 for new_item in file_ast.items.into_iter().rev() {
                     items.insert(i, new_item);
                 }
+                items.insert(i, dep_anchor);
                 continue;
             }
         }
